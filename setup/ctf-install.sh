@@ -204,14 +204,7 @@ run_backup() {
 run_deploy_env() {
   print_step "Deploying ~/.ctf_env"
 
-  # Extract current session variable values before overwriting
-  local cur_target="" cur_platform="" cur_boxname="" cur_boxdir=""
-  if [[ -f "$CTF_ENV_FILE" ]]; then
-    cur_target=$(grep   '^export TARGET='   "$CTF_ENV_FILE" | cut -d'"' -f2 | tr -d '\n')
-    cur_platform=$(grep '^export PLATFORM=' "$CTF_ENV_FILE" | cut -d'"' -f2 | tr -d '\n')
-    cur_boxname=$(grep  '^export BOXNAME='  "$CTF_ENV_FILE" | cut -d'"' -f2 | tr -d '\n')
-    cur_boxdir=$(grep   '^export BOX_DIR='  "$CTF_ENV_FILE" | cut -d'"' -f2 | tr -d '\n')
-  fi
+  # All session variables are reset on install — use ctf-clear to reset them manually at any time
 
   # Build the platform arrays dynamically from KNOWN_PLATFORMS
   local platform_codes=()
@@ -222,7 +215,7 @@ run_deploy_env() {
     platform_name_entries+=("  \"${entry}\"")
   done
 
-  # Write fresh ~/.ctf_env — session variables preserved from old file
+  # Write fresh ~/.ctf_env — all session variables start clean
   cat > "$CTF_ENV_FILE" << ENVEOF
 # =============================================================================
 # ~/.ctf_env — CTF Session Functions
@@ -232,10 +225,10 @@ run_deploy_env() {
 # =============================================================================
 
 # --- Current session variables -----------------------------------------------
-export TARGET="${cur_target}"
-export PLATFORM="${cur_platform}"
-export BOXNAME="${cur_boxname}"
-export BOX_DIR="${cur_boxdir}"
+export TARGET=""
+export PLATFORM=""
+export BOXNAME=""
+export BOX_DIR=""
 
 # --- Recognised platforms ----------------------------------------------------
 # To add a platform: edit KNOWN_PLATFORMS in ctf-install.sh and re-run ctf-install
@@ -412,13 +405,7 @@ ENVEOF
 
   print_ok "~/.ctf_env deployed."
 
-  # Show preserved session values if any existed
-  if [[ -n "$cur_target" || -n "$cur_platform" || -n "$cur_boxname" ]]; then
-    print_info "Session variables preserved from previous install:"
-    [[ -n "$cur_platform" ]] && echo "         PLATFORM = ${BOLD}${cur_platform}${RESET}"
-    [[ -n "$cur_boxname"  ]] && echo "         BOXNAME  = ${BOLD}${cur_boxname}${RESET}"
-    [[ -n "$cur_target"   ]] && echo "         TARGET   = ${BOLD}${cur_target}${RESET}"
-  fi
+  print_info "All session variables cleared — run ${BOLD}ctf-clear${RESET} anytime to reset them manually."
 }
 
 # =============================================================================
