@@ -102,7 +102,6 @@ while IFS= read -r entry; do
   [[ -n "$entry" ]] && KNOWN_PLATFORMS+=("$entry")
 done < <( source "$CTF_ENV_SOURCE" 2>/dev/null; printf '%s\n' "${KNOWN_PLATFORMS[@]}" )
 
-
 # --- Required tools -----------------------------------------------------------
 # FORMAT: "command:display_name:apt_package"
 # To add a tool: append a new entry following this exact format
