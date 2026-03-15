@@ -8,14 +8,13 @@
 #   Safe to re-run — backs up existing config before overwriting.
 #
 # WHAT IT DOES:
-#   1. Confirmation prompt  — prevents accidental runs
-#   2. Dependency check     — lists missing tools with install commands
-#   3. Backup ~/.ctf_env    — saves to ~/.ctf_backups/ with timestamp
-#   4. Deploy ~/.ctf_env    — fresh copy of session functions
-#   5. Patch ~/.zshrc       — adds source line if not present
-#   6. Build /opt/CTF/      — platform directory tree
-#   7. Symlink all scripts  — everything in setup/ lands in /usr/local/bin/
-#   8. Run ctf-sync         — ensures repo is current
+#   1. Dependency check     — lists missing tools with install commands
+#   2. Backup ~/.ctf_env    — saves to ~/.ctf_backups/ with timestamp
+#   3. Deploy ~/.ctf_env    — copies ctf-env-functions.sh into place
+#   4. Patch ~/.zshrc       — adds source line if not present
+#   5. Build /opt/CTF/      — platform directory tree
+#   6. Symlink all scripts  — everything in setup/ lands in /usr/local/bin/
+#   7. Run ctf-sync         — ensures repo is current
 #
 # USAGE:
 #   First time:   chmod +x ctf-install.sh && ./ctf-install.sh
@@ -28,12 +27,46 @@
 #   Example: "sqlmap:SQLMap:sqlmap"
 #
 # ADDING NEW PLATFORMS:
-#   Find the KNOWN_PLATFORMS section below and add to the array.
+#   Edit KNOWN_PLATFORMS in ctf-env-functions.sh — that file is the authority.
+#   Re-run ctf-install after pushing changes to rebuild the directory tree.
 #
 # REPO: https://github.com/Ghost-Glitch04/CTF_Public
 # =============================================================================
 
-# --- Configuration ------------------------------------------------------------
+# =============================================================================
+# TEACHING NOTE — The installer's job has changed
+# =============================================================================
+# The old version of this file contained all CTF session functions (set-box,
+# set-platform, ctf-status, etc.) written inline as a heredoc. That meant:
+#   - Editing a session command required editing the installer
+#   - Re-running the installer was the only way to deploy a function change
+#   - KNOWN_PLATFORMS was duplicated between the installer and the env file
+#
+# The refactored version separates concerns cleanly:
+#   - ctf-install.sh    = machine setup only (runs once)
+#   - ctf-env-functions.sh = session commands (sourced every terminal)
+#
+# Now to update a session command:
+#   1. Edit ctf-env-functions.sh
+#   2. git push && ctf-sync
+#   3. source ~/.ctf_env
+#   No reinstall needed.
+# =============================================================================
+
+
+# =============================================================================
+# SECTION 1 — CONFIGURATION
+# =============================================================================
+# TEACHING NOTE — Source the env file FIRST, before anything else.
+# This is the key architectural change. By sourcing ctf-env-functions.sh at
+# the top, the installer can READ the KNOWN_PLATFORMS array that lives there.
+# That array is now the single source of truth — no more duplicate lists.
+#
+# We check that the file exists before sourcing it. If the repo wasn't cloned
+# yet (truly first run, bootstrap scenario), we print a clear error and exit
+# rather than proceeding with broken state. Fail loudly and early.
+# =============================================================================
+
 REPO_DIR="/opt/CTF_Public"
 CTF_BASE="/opt/CTF"
 CTF_ENV_FILE="$HOME/.ctf_env"
@@ -43,22 +76,24 @@ ZSHRC="$HOME/.zshrc"
 SYMLINK_DIR="/usr/local/bin"
 SETUP_DIR="$REPO_DIR/setup"
 
-# --- Known platforms ----------------------------------------------------------
-# To add a platform: append "CODE:Full Name" to this array
-KNOWN_PLATFORMS=(
-  "HTB:Hack The Box"
-  "LD:LetsDefend"
-  "DC:DefCon"
-  "THM:TryHackMe"
-  "GGL:Google CTF"
-)
+# Load KNOWN_PLATFORMS from the env functions file — it is the authority
+if [[ ! -f "$CTF_ENV_SOURCE" ]]; then
+  echo "\033[0;31m[ERROR]\033[0m ctf-env-functions.sh not found at: $CTF_ENV_SOURCE"
+  echo "        Is the repo cloned to $REPO_DIR?"
+  echo "        Run: sudo git clone https://github.com/Ghost-Glitch04/CTF_Public $REPO_DIR"
+  exit 1
+fi
+
+# Source only to read KNOWN_PLATFORMS — a subshell keeps our namespace clean
+# TEACHING NOTE — The ( ) creates a subshell. Variables set inside it don't
+# leak into the parent script. We only want KNOWN_PLATFORMS; sourcing the full
+# file in the main shell would load all the CTF functions into the installer's
+# namespace, which is messy. The subshell isolates the import cleanly.
+KNOWN_PLATFORMS=($( source "$CTF_ENV_SOURCE" 2>/dev/null; printf '%s\n' "${KNOWN_PLATFORMS[@]}" ))
 
 # --- Required tools -----------------------------------------------------------
 # FORMAT: "command:display_name:apt_package"
 # To add a tool: append a new entry following this exact format
-# command     = what's tested with `command -v`
-# display_name = shown in output
-# apt_package  = used in the install command shown to user
 REQUIRED_TOOLS=(
   "curl:cURL:curl"
   "nmap:Nmap:nmap"
@@ -77,6 +112,12 @@ DIM='\033[2m'
 RESET='\033[0m'
 
 # --- Helpers ------------------------------------------------------------------
+# TEACHING NOTE — The installer has its own print helpers (print_ok, print_err)
+# that are separate from the CTF session helpers (_ctf_ok, _ctf_err) in the
+# env file. They're intentionally different: the installer runs as a script,
+# the session functions run in an interactive shell. Keeping them separate
+# avoids the installer accidentally calling functions that haven't been loaded
+# yet, and keeps each file's namespace clean and self-contained.
 print_ok()   { echo "${GREEN}[OK]${RESET}    $1"; }
 print_skip() { echo "${DIM}[SKIP]  $1${RESET}"; }
 print_warn() { echo "${YELLOW}[WARN]${RESET}  $1"; }
@@ -99,16 +140,23 @@ show_help() {
   echo "  Format: \"command:display_name:apt_package\""
   echo ""
   echo "${CYAN}ADDING PLATFORMS:${RESET}"
-  echo "  Edit KNOWN_PLATFORMS array in this script."
-  echo "  Format: \"CODE:Full Name\""
+  echo "  Edit KNOWN_PLATFORMS in ctf-env-functions.sh — that is the authority."
+  echo "  Re-run ctf-install to rebuild the /opt/CTF/ directory tree."
   echo ""
   echo "${CYAN}BACKUP LOCATION:${RESET}"
   echo "  $BACKUP_DIR"
   echo ""
 }
 
+
 # =============================================================================
 # STEP 1 — DEPENDENCY CHECK
+# =============================================================================
+# TEACHING NOTE — Nothing about this step changes from the original.
+# It's already doing one job cleanly: checking for required tools and
+# reporting what's missing. It doesn't write files, modify state, or depend
+# on KNOWN_PLATFORMS. Good code doesn't need to change just because
+# other parts of the system were refactored.
 # =============================================================================
 run_dependency_check() {
   print_step "Dependency Check"
@@ -158,15 +206,19 @@ run_dependency_check() {
     print_info "Install them when ready and re-run ${BOLD}ctf-install${RESET} to verify."
   fi
 
-  # If --check flag, stop here
   if [[ "$1" == "--check-only" ]]; then
     echo ""
     exit 0
   fi
 }
 
+
 # =============================================================================
 # STEP 2 — BACKUP ~/.ctf_env
+# =============================================================================
+# TEACHING NOTE — Also unchanged. It does one thing: back up a file.
+# It doesn't care what's in ~/.ctf_env, who wrote it, or what replaces it.
+# That independence is why it needs no changes — isolation pays off here.
 # =============================================================================
 run_backup() {
   print_step "Backing Up ~/.ctf_env"
@@ -176,7 +228,6 @@ run_backup() {
     return 0
   fi
 
-  # Create backup directory if needed
   if [[ ! -d "$BACKUP_DIR" ]]; then
     mkdir -p "$BACKUP_DIR"
     print_ok "Created backup directory: ${BOLD}${BACKUP_DIR}${RESET}"
@@ -189,7 +240,6 @@ run_backup() {
   cp "$CTF_ENV_FILE" "$backup_file"
   print_ok "Backed up to: ${BOLD}${backup_file}${RESET}"
 
-  # Show how many backups exist and tip on cleanup
   local backup_count
   backup_count=$(ls "$BACKUP_DIR"/.ctf_env.* 2>/dev/null | wc -l | tr -d ' ')
   if (( backup_count > 5 )); then
@@ -198,218 +248,52 @@ run_backup() {
   fi
 }
 
+
 # =============================================================================
 # STEP 3 — DEPLOY ~/.ctf_env
+# =============================================================================
+# TEACHING NOTE — This is the biggest change in the refactor.
+# The old version wrote ~300 lines of session functions into ~/.ctf_env using
+# a heredoc. That had two problems:
+#
+#   1. The installer owned the content of session functions — changing
+#      set-box() meant editing ctf-install.sh and re-running it.
+#
+#   2. The heredoc required escaped dollar signs (\$var) and was difficult
+#      to read, test, or reason about in isolation.
+#
+# The new version does one thing: copy ctf-env-functions.sh to ~/.ctf_env.
+# That file is a proper, readable zsh script that you can open, test, and
+# edit independently. The installer just deploys it.
+#
+# `cp` vs symlink: we copy rather than symlink because ~/.ctf_env is sourced
+# by every terminal session. A symlink would mean the repo must always be
+# present and mounted — a copy works even if the repo is temporarily missing.
 # =============================================================================
 run_deploy_env() {
   print_step "Deploying ~/.ctf_env"
 
-  # All session variables are reset on install — use ctf-clear to reset them manually at any time
-
-  # Build the platform arrays dynamically from KNOWN_PLATFORMS
-  local platform_codes=()
-  local platform_name_entries=()
-  for entry in "${KNOWN_PLATFORMS[@]}"; do
-    local code="${entry%%:*}"
-    platform_codes+=("\"${code}\"")
-    platform_name_entries+=("  \"${entry}\"")
-  done
-
-  # Write fresh ~/.ctf_env — all session variables start clean
-  cat > "$CTF_ENV_FILE" << ENVEOF
-# =============================================================================
-# ~/.ctf_env — CTF Session Functions
-# Auto-deployed by ctf-install.sh — do not edit install logic here
-# To update: edit ctf-install.sh in your repo and re-run ctf-install
-# Last deployed: $(date)
-# =============================================================================
-
-# --- Current session variables -----------------------------------------------
-export TARGET=""
-export PLATFORM=""
-export BOXNAME=""
-export BOX_DIR=""
-
-# --- Recognised platforms ----------------------------------------------------
-# To add a platform: edit KNOWN_PLATFORMS in ctf-install.sh and re-run ctf-install
-KNOWN_PLATFORMS=(${platform_codes[*]})
-
-# --- Colors ------------------------------------------------------------------
-_RED='\033[0;31m'
-_YELLOW='\033[1;33m'
-_GREEN='\033[0;32m'
-_CYAN='\033[0;36m'
-_BOLD='\033[1m'
-_DIM='\033[2m'
-_RESET='\033[0m'
-
-# =============================================================================
-# set-target <ip>
-# =============================================================================
-set-target() {
-  local new_ip="\$1"
-  if [[ -z "\$new_ip" ]]; then
-    echo "\${_RED}[ERROR]\${_RESET} Usage: set-target <ip_address>"; return 1
+  if [[ ! -f "$CTF_ENV_SOURCE" ]]; then
+    print_err "Source file not found: ${BOLD}${CTF_ENV_SOURCE}${RESET}"
+    print_info "Ensure ctf-env-functions.sh exists in ${BOLD}${SETUP_DIR}${RESET}"
+    return 1
   fi
-  if ! [[ "\$new_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}\$ ]]; then
-    echo "\${_RED}[ERROR]\${_RESET} Invalid IP address: \${_BOLD}\${new_ip}\${_RESET}"; return 1
-  fi
-  local IFS='.'
-  local octets=("\${(@s/./)new_ip}")
-  for octet in \$octets; do
-    if (( octet > 255 )); then
-      echo "\${_RED}[ERROR]\${_RESET} Invalid IP address: \${_BOLD}\${new_ip}\${_RESET}"; return 1
-    fi
-  done
-  local old="\$TARGET"
-  export TARGET="\$new_ip"
-  if [[ -n "\$old" && "\$old" != "\$new_ip" ]]; then
-    echo "\${_CYAN}[TARGET]\${_RESET} \${_DIM}\${old}\${_RESET} → \${_BOLD}\${new_ip}\${_RESET}"
-  else
-    echo "\${_CYAN}[TARGET]\${_RESET} Set to \${_BOLD}\${new_ip}\${_RESET}"
-  fi
-  _ctf_update_env
-  _ctf_update_box_env
+
+  cp "$CTF_ENV_SOURCE" "$CTF_ENV_FILE"
+  print_ok "Deployed: ${BOLD}${CTF_ENV_SOURCE}${RESET} → ${BOLD}${CTF_ENV_FILE}${RESET}"
+  print_info "To update session commands: edit ctf-env-functions.sh, push, run ${BOLD}ctf-sync${RESET}"
+  print_info "Then reload with: ${BOLD}source ~/.ctf_env${RESET} — no reinstall needed."
 }
 
-# =============================================================================
-# set-platform <platform>
-# =============================================================================
-set-platform() {
-  local new_platform="\${1:u}"
-  if [[ -z "\$new_platform" ]]; then
-    echo "\${_RED}[ERROR]\${_RESET} Usage: set-platform <platform>"
-    echo "         Known: \${KNOWN_PLATFORMS[*]}"; return 1
-  fi
-  local known=false
-  for p in "\${KNOWN_PLATFORMS[@]}"; do
-    [[ "\$p" == "\$new_platform" ]] && known=true && break
-  done
-  if ! \$known; then
-    echo "\${_YELLOW}[WARN]\${_RESET}  '\${_BOLD}\${new_platform}\${_RESET}' is not a recognised platform."
-    echo "         Known: \${_BOLD}\${KNOWN_PLATFORMS[*]}\${_RESET}"
-    echo -n "         Continue anyway? [y/N]: "; read confirm
-    [[ "\$confirm" != [yY] ]] && echo "\${_RED}[ABORT]\${_RESET} Platform not set." && return 1
-  fi
-  local old="\$PLATFORM"
-  export PLATFORM="\$new_platform"
-  if [[ -n "\$old" && "\$old" != "\$new_platform" ]]; then
-    echo "\${_CYAN}[PLATFORM]\${_RESET} \${_DIM}\${old}\${_RESET} → \${_BOLD}\${new_platform}\${_RESET}"
-  else
-    echo "\${_CYAN}[PLATFORM]\${_RESET} Set to \${_BOLD}\${new_platform}\${_RESET}"
-  fi
-  local pdir="${CTF_BASE}/\${new_platform}"
-  if [[ ! -d "\$pdir" ]]; then
-    mkdir -p "\$pdir"
-    echo "\${_GREEN}[OK]\${_RESET}    Created: \${_BOLD}\${pdir}\${_RESET}"
-  fi
-  [[ -n "\$BOXNAME" ]] && export BOX_DIR="${CTF_BASE}/\${PLATFORM}/\${BOXNAME}"
-  _ctf_update_env
-  _ctf_update_box_env
-}
-
-# =============================================================================
-# set-box <boxname>
-# =============================================================================
-set-box() {
-  local new_box="\${1//[^a-zA-Z0-9_-]/_}"
-  if [[ -z "\$new_box" ]]; then
-    echo "\${_RED}[ERROR]\${_RESET} Usage: set-box <box_name>"; return 1
-  fi
-  local old="\$BOXNAME"
-  export BOXNAME="\$new_box"
-  if [[ -n "\$old" && "\$old" != "\$new_box" ]]; then
-    echo "\${_CYAN}[BOX]\${_RESET} \${_DIM}\${old}\${_RESET} → \${_BOLD}\${new_box}\${_RESET}"
-  else
-    echo "\${_CYAN}[BOX]\${_RESET} Set to \${_BOLD}\${new_box}\${_RESET}"
-  fi
-  if [[ -n "\$PLATFORM" ]]; then
-    export BOX_DIR="${CTF_BASE}/\${PLATFORM}/\${BOXNAME}"
-    if [[ ! -d "\$BOX_DIR" ]]; then
-      mkdir -p "\${BOX_DIR}/scans" "\${BOX_DIR}/exploits" "\${BOX_DIR}/notes" "\${BOX_DIR}/flags"
-      echo "\${_GREEN}[OK]\${_RESET}    Created workspace: \${_BOLD}\${BOX_DIR}\${_RESET}"
-    fi
-  else
-    echo "\${_YELLOW}[WARN]\${_RESET}  \\\$PLATFORM not set — run \${_BOLD}set-platform <platform>\${_RESET} first."
-  fi
-  _ctf_update_env
-  _ctf_update_box_env
-}
-
-# =============================================================================
-# ctf-status
-# =============================================================================
-ctf-status() {
-  echo ""
-  echo "\${_BOLD}\${_CYAN}╔══ CTF Session Status ══════════════════════╗\${_RESET}"
-  [[ -n "\$PLATFORM" ]] && echo "\${_BOLD}\${_CYAN}║\${_RESET}  Platform  : \${_BOLD}\${PLATFORM}\${_RESET}" \
-                        || echo "\${_BOLD}\${_CYAN}║\${_RESET}  Platform  : \${_DIM}not set\${_RESET}"
-  [[ -n "\$BOXNAME"  ]] && echo "\${_BOLD}\${_CYAN}║\${_RESET}  Box       : \${_BOLD}\${BOXNAME}\${_RESET}"  \
-                        || echo "\${_BOLD}\${_CYAN}║\${_RESET}  Box       : \${_DIM}not set\${_RESET}"
-  [[ -n "\$TARGET"   ]] && echo "\${_BOLD}\${_CYAN}║\${_RESET}  Target IP : \${_BOLD}\${TARGET}\${_RESET}"   \
-                        || echo "\${_BOLD}\${_CYAN}║\${_RESET}  Target IP : \${_DIM}not set\${_RESET}"
-  [[ -n "\$BOX_DIR"  ]] && echo "\${_BOLD}\${_CYAN}║\${_RESET}  Box Dir   : \${_BOLD}\${BOX_DIR}\${_RESET}"  \
-                        || echo "\${_BOLD}\${_CYAN}║\${_RESET}  Box Dir   : \${_DIM}not set\${_RESET}"
-  echo "\${_BOLD}\${_CYAN}╚════════════════════════════════════════════╝\${_RESET}"
-  echo ""
-}
-
-# =============================================================================
-# ctf-clear
-# =============================================================================
-ctf-clear() {
-  echo -n "\${_YELLOW}[WARN]\${_RESET}  Clear all CTF session variables? [y/N]: "
-  read confirm
-  if [[ "\$confirm" == [yY] ]]; then
-    export TARGET="" PLATFORM="" BOXNAME="" BOX_DIR=""
-    _ctf_update_env
-    echo "\${_GREEN}[OK]\${_RESET}    Session cleared."
-  else
-    echo "\${_DIM}[SKIP]  Nothing changed.\${_RESET}"
-  fi
-}
-
-# =============================================================================
-# _ctf_update_env (internal — rewrites session variable lines in ~/.ctf_env)
-# =============================================================================
-_ctf_update_env() {
-  local tmp=\$(mktemp)
-  while IFS= read -r line; do
-    case "\$line" in
-      "export TARGET="*)   echo "export TARGET=\"\${TARGET}\""     ;;
-      "export PLATFORM="*) echo "export PLATFORM=\"\${PLATFORM}\"" ;;
-      "export BOXNAME="*)  echo "export BOXNAME=\"\${BOXNAME}\""   ;;
-      "export BOX_DIR="*)  echo "export BOX_DIR=\"\${BOX_DIR}\""   ;;
-      *)                   echo "\$line"                            ;;
-    esac
-  done < "\$HOME/.ctf_env" > "\$tmp"
-  mv "\$tmp" "\$HOME/.ctf_env"
-}
-
-# =============================================================================
-# _ctf_update_box_env (internal — writes .env into current box directory)
-# =============================================================================
-_ctf_update_box_env() {
-  if [[ -n "\$BOX_DIR" && -d "\$BOX_DIR" ]]; then
-    cat > "\${BOX_DIR}/.env" << BOXENV
-# Auto-generated by ctf-install.sh — \$(date)
-# Source in any terminal: source \${BOX_DIR}/.env
-export TARGET="\${TARGET}"
-export PLATFORM="\${PLATFORM}"
-export BOXNAME="\${BOXNAME}"
-export BOX_DIR="\${BOX_DIR}"
-BOXENV
-  fi
-}
-ENVEOF
-
-  print_ok "~/.ctf_env deployed."
-
-  print_info "All session variables cleared — run ${BOLD}ctf-clear${RESET} anytime to reset them manually."
-}
 
 # =============================================================================
 # STEP 4 — PATCH ~/.zshrc
+# =============================================================================
+# TEACHING NOTE — Also unchanged. The source line it writes still works
+# because ~/.ctf_env still exists at the same path — we just changed what's
+# in it. The interface (the path) stayed the same; only the implementation
+# (how the file gets its content) changed. Good design insulates callers
+# from implementation details.
 # =============================================================================
 run_patch_zshrc() {
   print_step "Patching ~/.zshrc"
@@ -424,8 +308,23 @@ run_patch_zshrc() {
   fi
 }
 
+
 # =============================================================================
 # STEP 5 — BUILD /opt/CTF/ DIRECTORY TREE
+# =============================================================================
+# TEACHING NOTE — This step looks the same but is now driven by a different
+# source of truth. Previously, it looped over a KNOWN_PLATFORMS array defined
+# right here in ctf-install.sh. Now it loops over the KNOWN_PLATFORMS array
+# that was loaded at the top of this script from ctf-env-functions.sh.
+#
+# The loop body is identical. Only the data source changed — and that's
+# exactly what we want. The installer no longer needs to be edited when you
+# add a platform. You add it to ctf-env-functions.sh, and the next time
+# ctf-install runs, it picks it up automatically.
+#
+# This pattern — code that is stable, data that changes — is one of the core
+# ideas behind scalable scripting. If you find yourself editing a script just
+# to change a list, the list should probably live somewhere else.
 # =============================================================================
 run_build_directories() {
   print_step "Building /opt/CTF/ Directory Tree"
@@ -451,8 +350,14 @@ run_build_directories() {
   done
 }
 
+
 # =============================================================================
 # STEP 6 — SYMLINK ALL SCRIPTS IN setup/ TO /usr/local/bin/
+# =============================================================================
+# TEACHING NOTE — Also unchanged. Auto-discovering *.sh in setup/ means you
+# never need to edit this function when you add a new script. Drop it in the
+# folder, run ctf-install, and it appears in PATH. The data (script files)
+# drives the behavior (symlinks created) without code changes.
 # =============================================================================
 run_symlinks() {
   print_step "Symlinking Tools to /usr/local/bin/"
@@ -467,21 +372,16 @@ run_symlinks() {
   for script in "$SETUP_DIR"/*.sh; do
     [[ -f "$script" ]] || continue
 
-    # Derive symlink name: strip path and .sh extension
     local filename="${script##*/}"
     local linkname="${filename%.sh}"
     local linkpath="${SYMLINK_DIR}/${linkname}"
 
-    # Make executable first
     chmod +x "$script"
 
-    # Create or update symlink
     if [[ -L "$linkpath" ]]; then
-      # Already a symlink — update it
       sudo ln -sf "$script" "$linkpath"
       print_ok "Updated symlink: ${BOLD}${linkname}${RESET} → ${DIM}${script}${RESET}"
     elif [[ -f "$linkpath" ]]; then
-      # A real file exists at that name — warn and skip
       print_warn "File already exists at ${BOLD}${linkpath}${RESET} — skipping"
       print_info "Remove it manually to allow symlinking: ${BOLD}sudo rm ${linkpath}${RESET}"
     else
@@ -497,21 +397,35 @@ run_symlinks() {
   print_info "Any new .sh file added to setup/ will be symlinked on next ${BOLD}ctf-install${RESET}."
 }
 
+
 # =============================================================================
 # STEP 7 — RUN ctf-sync TO ENSURE REPO IS CURRENT
+# =============================================================================
+# TEACHING NOTE — Two small fixes here from the original:
+#
+#   1. The fallback filename is corrected from smart-sync.sh to ctf-sync.sh,
+#      matching the renamed file in your repo.
+#
+#   2. The ordering note: ctf-sync runs AFTER symlinks are created (Step 6),
+#      so by the time we reach this step, ctf-sync is already in PATH from
+#      the symlink we just made. The `command -v ctf-sync` check will succeed
+#      on a re-run (symlink already existed) but also now succeeds on a first
+#      run if Step 6 completed cleanly. The fallback path handles the edge
+#      case where Step 6 failed or the symlink wasn't created for some reason.
 # =============================================================================
 run_sync() {
   print_step "Syncing Repo"
 
   if command -v ctf-sync &>/dev/null; then
     ctf-sync
-  elif [[ -f "$SETUP_DIR/smart-sync.sh" ]]; then
-    bash "$SETUP_DIR/smart-sync.sh"
+  elif [[ -f "$SETUP_DIR/ctf-sync.sh" ]]; then
+    bash "$SETUP_DIR/ctf-sync.sh"
   else
-    print_warn "ctf-sync not available yet — skipping."
+    print_warn "ctf-sync not available — skipping."
     print_info "It will be available after this install completes."
   fi
 }
+
 
 # =============================================================================
 # ENTRY POINT
@@ -558,6 +472,11 @@ run_symlinks
 run_sync
 
 # --- Done ---------------------------------------------------------------------
+# TEACHING NOTE — The completion summary is the user's first look at what
+# the toolkit can do. Update it any time you add a new command. It references
+# the new command names (set-address instead of set-target) because it should
+# always reflect the current state of ctf-env-functions.sh.
+# =============================================================================
 echo ""
 echo "${BOLD}${GREEN}=== Installation Complete ===${RESET}"
 echo ""
@@ -565,15 +484,16 @@ echo "  ${CYAN}Reload your shell:${RESET}"
 echo "  ${BOLD}source ~/.zshrc${RESET}"
 echo ""
 echo "  ${CYAN}Start a CTF session:${RESET}"
-echo "  ${BOLD}set-platform HTB${RESET}"
+echo "  ${BOLD}set-platform <platform>${RESET}"
 echo "  ${BOLD}set-box      <boxname>${RESET}"
-echo "  ${BOLD}set-target   <ip>${RESET}"
+echo "  ${BOLD}set-address  <ip>${RESET}"
 echo "  ${BOLD}ctf-status${RESET}"
 echo ""
 echo "  ${CYAN}Available commands:${RESET}"
-echo "  ${BOLD}ctf-install${RESET}   Re-run this installer"
-echo "  ${BOLD}ctf-sync${RESET}      Pull latest repo changes"
-echo "  ${BOLD}ctf-install --check${RESET}   Dependency check only"
+echo "  ${BOLD}ctf-install${RESET}              Re-run this installer"
+echo "  ${BOLD}ctf-install --check${RESET}      Dependency check only"
+echo "  ${BOLD}ctf-sync${RESET}                 Pull latest repo changes"
+echo "  ${BOLD}ctf-help${RESET}                 List all session commands"
 echo ""
 echo "  ${DIM}Backups stored in: ${BACKUP_DIR}${RESET}"
 echo ""
