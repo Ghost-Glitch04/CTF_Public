@@ -90,7 +90,7 @@ fi
 # file in the main shell would load all the CTF functions into the installer's
 # namespace, which is messy. The subshell isolates the import cleanly.
 # Read KNOWN_PLATFORMS safely — IFS loop preserves entries that contain spaces
-#---
+
 # TEACHING NOTE — Word splitting is a common shell pitfall. When a command
 # substitution like $(...) is unquoted, the shell splits output on whitespace.
 # "HTB:Hack The Box" would become three elements: "HTB:Hack", "The", "Box".
@@ -105,12 +105,21 @@ done < <( source "$CTF_ENV_SOURCE" 2>/dev/null; printf '%s\n' "${KNOWN_PLATFORMS
 # --- Required tools -----------------------------------------------------------
 # FORMAT: "command:display_name:apt_package"
 # To add a tool: append a new entry following this exact format
+
+# TEACHING NOTE — Adding a 4th field for version parsing.
+# Different tools put their version number in different positions on line 1:
+#   curl 8.5.0 ...       → field 2
+#   git version 2.51.0   → field 3
+#   GNU Wget 1.21.4 ...  → field 3
+#   Python 3.13.9        → field 2
+#   Nmap 7.x ...         → field 3 (and uses -V not --version)
+# Format: "command:display_name:apt_package:version_field"
 REQUIRED_TOOLS=(
-  "curl:cURL:curl"
-  "nmap:Nmap:nmap"
-  "git:Git:git"
-  "wget:Wget:wget"
-  "python3:Python3:python3"
+  "curl:cURL:curl:2"
+  "nmap:Nmap:nmap:3"
+  "git:Git:git:3"
+  "wget:Wget:wget:3"
+  "python3:Python3:python3:2"
 )
 
 # --- Colors -------------------------------------------------------------------
@@ -179,11 +188,23 @@ run_dependency_check() {
     local cmd="${entry%%:*}"
     local rest="${entry#*:}"
     local name="${rest%%:*}"
-    local pkg="${rest##*:}"
+    local rest2="${rest#*:}"
+    local pkg="${rest2%%:*}"
+    local vfield="${rest2##*:}"
 
     if command -v "$cmd" &>/dev/null; then
-      local version
-      version=$(${cmd} --version 2>/dev/null | head -1 | awk '{print $NF}')
+      # TEACHING NOTE — Declare and assign local variables on the same line.
+      # In zsh, `local var` followed by `var=$(...)` on separate lines can
+      # cause the assignment to echo itself to the terminal in some execution
+      # contexts. Combining into `local var=$(...)` prevents this side effect.
+      #
+      # vfield was parsed from the 4th segment of the REQUIRED_TOOLS entry above.
+      # nmap uses -V; all others use --version.
+      # awk -v f="$vfield" passes the field number as a variable so awk can
+      # print the correct column without hardcoding it.
+      local vflag="--version"
+      [[ "$cmd" == "nmap" ]] && vflag="-V"
+      local version=$(${cmd} ${vflag} 2>/dev/null | head -1 | awk -v f="$vfield" '{print $f}' | tr -d '(),')
       print_ok "${name} ${DIM}(${version})${RESET}"
       present+=("$cmd")
     else
