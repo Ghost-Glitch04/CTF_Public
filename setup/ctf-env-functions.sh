@@ -347,8 +347,6 @@ set-platform() {
     old_name=$(_ctf_lookup_platform_name "$old")
     echo "${_CTF_CYAN}[PLATFORM]${_CTF_RESET} ${_CTF_DIM}${old} (${old_name})${_CTF_RESET} → ${_CTF_BOLD}${new_platform} (${full_name})${_CTF_RESET}"
   else
-    local full_name
-    full_name=$(_ctf_lookup_platform_name "$new_platform")
     echo "${_CTF_CYAN}[PLATFORM]${_CTF_RESET} Set to ${_CTF_BOLD}${new_platform}${_CTF_RESET} ${_CTF_DIM}(${full_name})${_CTF_RESET}"
   fi
 
