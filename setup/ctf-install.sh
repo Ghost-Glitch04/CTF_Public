@@ -207,10 +207,10 @@ run_deploy_env() {
   # Extract current session variable values before overwriting
   local cur_target="" cur_platform="" cur_boxname="" cur_boxdir=""
   if [[ -f "$CTF_ENV_FILE" ]]; then
-    cur_target=$(grep   '^export TARGET='   "$CTF_ENV_FILE" | cut -d'"' -f2)
-    cur_platform=$(grep '^export PLATFORM=' "$CTF_ENV_FILE" | cut -d'"' -f2)
-    cur_boxname=$(grep  '^export BOXNAME='  "$CTF_ENV_FILE" | cut -d'"' -f2)
-    cur_boxdir=$(grep   '^export BOX_DIR='  "$CTF_ENV_FILE" | cut -d'"' -f2)
+    cur_target=$(grep   '^export TARGET='   "$CTF_ENV_FILE" | cut -d'"' -f2 | tr -d '\n')
+    cur_platform=$(grep '^export PLATFORM=' "$CTF_ENV_FILE" | cut -d'"' -f2 | tr -d '\n')
+    cur_boxname=$(grep  '^export BOXNAME='  "$CTF_ENV_FILE" | cut -d'"' -f2 | tr -d '\n')
+    cur_boxdir=$(grep   '^export BOX_DIR='  "$CTF_ENV_FILE" | cut -d'"' -f2 | tr -d '\n')
   fi
 
   # Build the platform arrays dynamically from KNOWN_PLATFORMS
