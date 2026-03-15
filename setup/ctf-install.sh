@@ -89,7 +89,19 @@ fi
 # leak into the parent script. We only want KNOWN_PLATFORMS; sourcing the full
 # file in the main shell would load all the CTF functions into the installer's
 # namespace, which is messy. The subshell isolates the import cleanly.
-KNOWN_PLATFORMS=($( source "$CTF_ENV_SOURCE" 2>/dev/null; printf '%s\n' "${KNOWN_PLATFORMS[@]}" ))
+# Read KNOWN_PLATFORMS safely — IFS loop preserves entries that contain spaces
+#---
+# TEACHING NOTE — Word splitting is a common shell pitfall. When a command
+# substitution like $(...) is unquoted, the shell splits output on whitespace.
+# "HTB:Hack The Box" would become three elements: "HTB:Hack", "The", "Box".
+# Reading line-by-line with a while/read loop preserves each full entry intact,
+# regardless of spaces in the platform full name.
+# Note: mapfile is bash-only. This script uses zsh, so we use the portable loop.
+KNOWN_PLATFORMS=()
+while IFS= read -r entry; do
+  [[ -n "$entry" ]] && KNOWN_PLATFORMS+=("$entry")
+done < <( source "$CTF_ENV_SOURCE" 2>/dev/null; printf '%s\n' "${KNOWN_PLATFORMS[@]}" )
+
 
 # --- Required tools -----------------------------------------------------------
 # FORMAT: "command:display_name:apt_package"
