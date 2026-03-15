@@ -1,6 +1,6 @@
 #!/bin/zsh
 # =============================================================================
-# smart-sync.sh — CTF Repo Smart Sync
+# ctf-sync.sh — CTF Repo ctf Sync
 # =============================================================================
 # ABOUT:
 #   Checks if the CTF_Public repo exists locally.
@@ -9,8 +9,8 @@
 #   Then    → fixes ownership and makes all scripts executable
 #
 # USAGE:
-#   ./smart-sync.sh              # uses defaults below
-#   ./smart-sync.sh --help       # show help
+#   ./ctf-sync.sh              # uses defaults below
+#   ./ctf-sync.sh --help       # show help
 #
 # REPO: https://github.com/Ghost-Glitch04/CTF_Public
 # =============================================================================
@@ -33,7 +33,7 @@ RESET='\033[0m'
 # --- Help ---------------------------------------------------------------------
 if [[ "$1" == "--help" || "$1" == "-h" ]]; then
   echo ""
-  echo "${BOLD}smart-sync.sh${RESET} — CTF Repo Smart Sync"
+  echo "${BOLD}ctf-sync.sh${RESET} — CTF Repo ctf Sync"
   echo ""
   echo "  Pulls latest changes if repo exists, clones fresh if it doesn't."
   echo "  Then fixes ownership and makes all .sh scripts executable."
@@ -42,15 +42,15 @@ if [[ "$1" == "--help" || "$1" == "-h" ]]; then
   echo "  ${CYAN}Target:${RESET}  $INSTALL_DIR"
   echo ""
   echo "  ${BOLD}Usage:${RESET}"
-  echo "  ./smart-sync.sh          Run sync"
-  echo "  ./smart-sync.sh --help   Show this message"
+  echo "  ./ctf-sync.sh          Run sync"
+  echo "  ./ctf-sync.sh --help   Show this message"
   echo ""
   exit 0
 fi
 
 # --- Header -------------------------------------------------------------------
 echo ""
-echo "${BOLD}${CYAN}=== CTF Repo Smart Sync ===${RESET}"
+echo "${BOLD}${CYAN}=== CTF Repo ctf Sync ===${RESET}"
 echo "${DIM}  Repo:   $REPO_URL${RESET}"
 echo "${DIM}  Target: $INSTALL_DIR${RESET}"
 echo ""
@@ -158,6 +158,6 @@ echo "  ${CYAN}Owner:${RESET}     $REPO_OWNER"
 echo "  ${CYAN}Scripts:${RESET}   $TOTAL executable"
 echo ""
 echo "  ${DIM}Tip: Add this to your toolkit:${RESET}"
-echo "  ${BOLD}sudo ln -sf ${INSTALL_DIR}/setup/smart-sync.sh /usr/local/bin/ctf-sync${RESET}"
+echo "  ${BOLD}sudo ln -sf ${INSTALL_DIR}/setup/ctf-sync.sh /usr/local/bin/ctf-sync${RESET}"
 echo "  ${DIM}Then run ${BOLD}ctf-sync${RESET}${DIM} from anywhere to stay up to date.${RESET}"
 echo ""
