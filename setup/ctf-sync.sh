@@ -1,6 +1,6 @@
 #!/bin/zsh
 # =============================================================================
-# ctf-sync.sh — CTF Repo ctf Sync
+# ctf-sync.sh — CTF Repo CTF Sync
 # =============================================================================
 # ABOUT:
 #   Checks if the CTF_Public repo exists locally.
@@ -33,7 +33,7 @@ RESET='\033[0m'
 # --- Help ---------------------------------------------------------------------
 if [[ "$1" == "--help" || "$1" == "-h" ]]; then
   echo ""
-  echo "${BOLD}ctf-sync.sh${RESET} — CTF Repo ctf Sync"
+  echo "${BOLD}ctf-sync.sh${RESET} — CTF Repo CTF Sync"
   echo ""
   echo "  Pulls latest changes if repo exists, clones fresh if it doesn't."
   echo "  Then fixes ownership and makes all .sh scripts executable."
@@ -50,7 +50,7 @@ fi
 
 # --- Header -------------------------------------------------------------------
 echo ""
-echo "${BOLD}${CYAN}=== CTF Repo ctf Sync ===${RESET}"
+echo "${BOLD}${CYAN}=== CTF Repo CTF Sync ===${RESET}"
 echo "${DIM}  Repo:   $REPO_URL${RESET}"
 echo "${DIM}  Target: $INSTALL_DIR${RESET}"
 echo ""
