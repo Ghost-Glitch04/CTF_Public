@@ -339,8 +339,13 @@ set-platform() {
   local old="$PLATFORM"
   export PLATFORM="$new_platform"
 
+  local full_name
+  full_name=$(_ctf_lookup_platform_name "$new_platform")
+
   if [[ -n "$old" && "$old" != "$new_platform" ]]; then
-    echo "${_CTF_CYAN}[PLATFORM]${_CTF_RESET} ${_CTF_DIM}${old}${_CTF_RESET} → ${_CTF_BOLD}${new_platform}${_CTF_RESET}"
+    local old_name
+    old_name=$(_ctf_lookup_platform_name "$old")
+    echo "${_CTF_CYAN}[PLATFORM]${_CTF_RESET} ${_CTF_DIM}${old} (${old_name})${_CTF_RESET} → ${_CTF_BOLD}${new_platform} (${full_name})${_CTF_RESET}"
   else
     local full_name
     full_name=$(_ctf_lookup_platform_name "$new_platform")
