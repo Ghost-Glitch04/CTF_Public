@@ -10,7 +10,7 @@
 #
 # COMMANDS:
 #   set-platform <code>    — Set active CTF platform (HTB, THM, etc.)
-#   set-box      <name>    — Set active box and create workspace
+#   set-box      <n>       — Set active box and create workspace
 #   set-address  <ip>      — Set target IP address
 #   ctf-status             — Display current session state
 #   ctf-clear              — Clear all session variables
@@ -76,21 +76,11 @@ if [[ -z "$CTF_REPO_DIR" ]]; then
   if [[ -d "$HOME/github/CTF_Public" ]]; then
     export CTF_REPO_DIR="$HOME/github/CTF_Public"
   else
-    # TEACHING NOTE — Collapsed redundant elif/else. (Bug fix #1)
+    # TEACHING NOTE — Collapsed redundant elif/else. (Prior bug fix #1)
     #
-    # The previous version had three branches:
-    #   elif [[ -d "/opt/CTF_Public" ]]; then export CTF_REPO_DIR="/opt/CTF_Public"
-    #   else                                   export CTF_REPO_DIR="/opt/CTF_Public"
-    #
-    # Both branches assigned the same value — the elif condition was checked
-    # but made no difference to the outcome. This is called dead code: it
-    # executes, but has no effect. Dead code is worth removing because it
-    # implies a distinction that doesn't exist, and makes readers wonder if
-    # the two cases were intended to behave differently.
-    #
-    # The fix collapses them into a single else. Whether /opt/CTF_Public
-    # already exists or not, the fallback is the same production path.
-    # If it doesn't exist yet, ctf-sync.sh will create it on first run.
+    # Both the elif and else previously assigned the same value. Collapsed
+    # into a single else — whether /opt/CTF_Public exists or not, the
+    # fallback is the production path. ctf-sync.sh creates it on first run.
     export CTF_REPO_DIR="/opt/CTF_Public"
   fi
 fi
@@ -199,7 +189,7 @@ _ctf_info() { echo "${_CTF_CYAN}[INFO]${_CTF_RESET}  $1"; }
 #
 # mktemp creates a uniquely named temp file — safer than hardcoding /tmp/foo.
 #
-# TEACHING NOTE — Why CTF_BASE is not persisted here. (Bug note #2)
+# TEACHING NOTE — Why CTF_BASE is not persisted here.
 #
 # _ctf_persist intentionally only writes the four session state variables
 # (ADDRESS, PLATFORM, BOXNAME, BOX_DIR). CTF_BASE is a configuration value,
@@ -207,13 +197,9 @@ _ctf_info() { echo "${_CTF_CYAN}[INFO]${_CTF_RESET}  $1"; }
 # determined at startup by CTF_BASE_DIR (or the default /opt/CTF).
 #
 # If you want a non-default CTF_BASE to survive across terminal sessions,
-# the right place to set it is in ~/.zshrc, above the `source ~/.ctf_env`
-# line, like this:
+# set it in ~/.zshrc above the `source ~/.ctf_env` line:
 #   export CTF_BASE_DIR="$HOME/CTF"
 #   source ~/.ctf_env
-#
-# That way it's set before this file is sourced, and the CTF_BASE="${CTF_BASE_DIR:-...}"
-# line at the top of this file picks it up correctly every time.
 # =============================================================================
 
 _ctf_persist() {
@@ -413,10 +399,29 @@ set-platform() {
     echo "${_CTF_CYAN}[PLATFORM]${_CTF_RESET} Set to ${_CTF_BOLD}${new_platform}${_CTF_RESET} ${_CTF_DIM}(${full_name})${_CTF_RESET}"
   fi
 
-  # Create the platform directory if it doesn't exist
+  # TEACHING NOTE — Conditional sudo for platform directory creation. (Bug fix #3)
+  #
+  # The previous version used plain `mkdir -p "$pdir"` here, which works on
+  # dev machines where CTF_BASE is under $HOME. On a production machine where
+  # CTF_BASE is /opt/CTF (owned by root), this mkdir silently fails with a
+  # permission denied error and no workspace directory is created.
+  #
+  # ctf-install.sh correctly uses sudo for /opt/ paths in run_build_directories.
+  # This function creates platform directories interactively (e.g. when a user
+  # adds a new platform to KNOWN_PLATFORMS and runs set-platform before
+  # re-running ctf-install), so it needs the same conditional sudo logic.
+  #
+  # The pattern mirrors what ctf-install.sh does: check once whether the path
+  # is under /opt/, then apply sudo only if needed. This keeps both scripts
+  # consistent and means "does this need elevated permissions?" is always
+  # answered the same way regardless of which script is running.
   local pdir="${CTF_BASE}/${new_platform}"
   if [[ ! -d "$pdir" ]]; then
-    mkdir -p "$pdir" && _ctf_ok "Created: ${_CTF_BOLD}${pdir}${_CTF_RESET}"
+    if [[ "$CTF_BASE" == /opt/* ]]; then
+      sudo mkdir -p "$pdir" && _ctf_ok "Created: ${_CTF_BOLD}${pdir}${_CTF_RESET}"
+    else
+      mkdir -p "$pdir" && _ctf_ok "Created: ${_CTF_BOLD}${pdir}${_CTF_RESET}"
+    fi
   fi
 
   # Update BOX_DIR if a box is already set
@@ -430,7 +435,7 @@ set-platform() {
 
 
 # =============================================================================
-# set-box <name>
+# set-box <n>
 # =============================================================================
 # TEACHING NOTE — Sanitizing user input for filesystem use.
 # Box names become directory names. You can't have spaces or special chars in
@@ -550,21 +555,10 @@ ctf-status() {
   local dir_display="${BOX_DIR:-${_CTF_DIM}not set${_CTF_RESET}}"
 
   # TEACHING NOTE — Env detection based on $HOME prefix, not a hardcoded path.
-  # (Refactor #5)
   #
-  # The previous version checked:
-  #   if [[ "$CTF_REPO_DIR" == "$HOME/github/CTF_Public" ]]; then
-  #
-  # This works if your dev repo is always at exactly that path, but breaks
-  # silently for anyone using a different location — ~/dev/CTF_Public,
-  # ~/projects/CTF_Public, etc. Their environment would be labelled "prod"
-  # even though it's clearly a user-space dev setup.
-  #
-  # The better question to ask is: "Is this repo under the user's home
-  # directory?" That's what distinguishes a personal dev checkout from a
-  # system-wide production install under /opt/. The $HOME* glob matches
-  # any path that begins with the user's home directory, regardless of what
-  # comes after it.
+  # Checking "$CTF_REPO_DIR" == "$HOME"* rather than a specific path like
+  # "$HOME/github/CTF_Public" means any dev checkout under the user's home
+  # directory is correctly labelled "dev", regardless of its exact location.
   local env_label
   if [[ "$CTF_REPO_DIR" == "$HOME"* ]]; then
     env_label="${_CTF_YELLOW}dev${_CTF_RESET}  ${_CTF_DIM}(${CTF_REPO_DIR})${_CTF_RESET}"
@@ -621,7 +615,7 @@ ctf-help() {
   echo ""
   echo "${_CTF_CYAN}Session Setup:${_CTF_RESET}"
   echo "  ${_CTF_BOLD}set-platform <code>${_CTF_RESET}    Set active platform (e.g. HTB, THM)"
-  echo "  ${_CTF_BOLD}set-box <name>${_CTF_RESET}         Set active box and create workspace"
+  echo "  ${_CTF_BOLD}set-box <n>${_CTF_RESET}            Set active box and create workspace"
   echo "  ${_CTF_BOLD}set-address <ip>${_CTF_RESET}       Set target IP address"
   echo ""
   echo "${_CTF_CYAN}Session Info:${_CTF_RESET}"
@@ -631,10 +625,23 @@ ctf-help() {
   echo "${_CTF_CYAN}Session Control:${_CTF_RESET}"
   echo "  ${_CTF_BOLD}ctf-clear${_CTF_RESET}              Clear all session variables"
   echo ""
+
+  # TEACHING NOTE — Added --prod flag entries to Maintenance section. (Refactor #4)
+  #
+  # The previous version listed ctf-install and ctf-sync but omitted their
+  # --prod variants. This meant a user on a dual-install machine who ran
+  # ctf-help to find the right command would see no indication that --prod
+  # existed. Help output should be the single source of truth for what a
+  # tool can do — if a flag exists, it belongs in the help.
+  #
+  # The rule: every publicly usable flag should appear in ctf-help. If you
+  # add a new flag to any script in this toolkit, add it here too.
   echo "${_CTF_CYAN}Maintenance:${_CTF_RESET}"
-  echo "  ${_CTF_BOLD}ctf-install${_CTF_RESET}            Re-run machine installer"
-  echo "  ${_CTF_BOLD}ctf-install --check${_CTF_RESET}    Dependency check only"
-  echo "  ${_CTF_BOLD}ctf-sync${_CTF_RESET}               Pull latest repo changes"
+  echo "  ${_CTF_BOLD}ctf-install${_CTF_RESET}              Re-run machine installer"
+  echo "  ${_CTF_BOLD}ctf-install --prod${_CTF_RESET}       Re-run targeting production install"
+  echo "  ${_CTF_BOLD}ctf-install --check${_CTF_RESET}      Dependency check only"
+  echo "  ${_CTF_BOLD}ctf-sync${_CTF_RESET}                 Pull latest repo changes"
+  echo "  ${_CTF_BOLD}ctf-sync --prod${_CTF_RESET}          Pull latest changes for production"
   echo ""
 
   # Show known platforms inline
