@@ -21,6 +21,12 @@
 #   Re-run:       ctf-install   (after first install, symlink is available)
 #   Help:         ctf-install --help
 #
+# DEV vs PRODUCTION:
+#   Production machines expect the repo at /opt/CTF_Public (default).
+#   Dev machines are detected automatically if ~/github/CTF_Public exists,
+#   or if CTF_REPO_DIR is already exported before the script runs.
+#   CTF_BASE_DIR can similarly override where workspaces are created.
+#
 # ADDING NEW TOOLS TO CHECK:
 #   Find the REQUIRED_TOOLS section below and add entries to the array.
 #   Format: "command_name:display_name:apt_package"
@@ -57,18 +63,42 @@
 # =============================================================================
 # SECTION 1 — CONFIGURATION
 # =============================================================================
-# TEACHING NOTE — Source the env file FIRST, before anything else.
-# This is the key architectural change. By sourcing ctf-env-functions.sh at
-# the top, the installer can READ the KNOWN_PLATFORMS array that lives there.
-# That array is now the single source of truth — no more duplicate lists.
+# TEACHING NOTE — Resolving REPO_DIR across dev and production environments.
 #
-# We check that the file exists before sourcing it. If the repo wasn't cloned
-# yet (truly first run, bootstrap scenario), we print a clear error and exit
-# rather than proceeding with broken state. Fail loudly and early.
+# Rather than a single hardcoded path, we resolve REPO_DIR in three passes:
+#
+#   Pass 1: CTF_REPO_DIR already set in the environment — honour it directly.
+#           A dev can export CTF_REPO_DIR before running the installer and it
+#           will be used without any auto-detection needed.
+#
+#   Pass 2: Auto-detect the known dev path (~/github/CTF_Public).
+#           If that directory exists, we're on a dev machine — use it.
+#
+#   Pass 3: Fall back to the production path (/opt/CTF_Public).
+#           This is the default for any machine that hasn't set CTF_REPO_DIR
+#           and doesn't have the repo under ~/github/.
+#
+# CTF_BASE follows the same pattern via CTF_BASE_DIR, so workspace directories
+# can be redirected on dev machines without touching the installer code.
+#
+# This approach means production machines require zero configuration changes —
+# they fall through all detection passes and land on the correct defaults.
+# Dev machines are handled automatically after the first ctf-sync.sh run.
 # =============================================================================
 
-REPO_DIR="/opt/CTF_Public"
-CTF_BASE="/opt/CTF"
+# --- Resolve repo directory ---------------------------------------------------
+if [[ -n "$CTF_REPO_DIR" ]]; then
+  REPO_DIR="$CTF_REPO_DIR"
+elif [[ -d "$HOME/github/CTF_Public" ]]; then
+  REPO_DIR="$HOME/github/CTF_Public"
+else
+  REPO_DIR="/opt/CTF_Public"
+fi
+
+# --- Resolve CTF base (workspace) directory -----------------------------------
+CTF_BASE="${CTF_BASE_DIR:-/opt/CTF}"
+
+# --- Derived paths (all relative to REPO_DIR — never need editing) ------------
 CTF_ENV_FILE="$HOME/.ctf_env"
 CTF_ENV_SOURCE="$REPO_DIR/setup/ctf-env-functions.sh"
 BACKUP_DIR="$HOME/.ctf_backups"
@@ -80,7 +110,7 @@ SETUP_DIR="$REPO_DIR/setup"
 if [[ ! -f "$CTF_ENV_SOURCE" ]]; then
   echo "\033[0;31m[ERROR]\033[0m ctf-env-functions.sh not found at: $CTF_ENV_SOURCE"
   echo "        Is the repo cloned to $REPO_DIR?"
-  echo "        Run: sudo git clone https://github.com/Ghost-Glitch04/CTF_Public $REPO_DIR"
+  echo "        Run: git clone https://github.com/Ghost-Glitch04/CTF_Public $REPO_DIR"
   exit 1
 fi
 
@@ -103,9 +133,9 @@ while IFS= read -r entry; do
 done < <( source "$CTF_ENV_SOURCE" 2>/dev/null; printf '%s\n' "${KNOWN_PLATFORMS[@]}" )
 
 # --- Required tools -----------------------------------------------------------
-# FORMAT: "command:display_name:apt_package"
+# FORMAT: "command:display_name:apt_package:version_field"
 # To add a tool: append a new entry following this exact format
-
+#
 # TEACHING NOTE — Adding a 4th field for version parsing.
 # Different tools put their version number in different positions on line 1:
 #   curl 8.5.0 ...       → field 2
@@ -113,7 +143,6 @@ done < <( source "$CTF_ENV_SOURCE" 2>/dev/null; printf '%s\n' "${KNOWN_PLATFORMS
 #   GNU Wget 1.21.4 ...  → field 3
 #   Python 3.13.9        → field 2
 #   Nmap 7.x ...         → field 3 (and uses -V not --version)
-# Format: "command:display_name:apt_package:version_field"
 REQUIRED_TOOLS=(
   "curl:cURL:curl:2"
   "nmap:Nmap:nmap:3"
@@ -155,13 +184,22 @@ show_help() {
   echo "  ./ctf-install.sh --help   Show this message"
   echo "  ./ctf-install.sh --check  Dependency check only, no changes made"
   echo ""
+  echo "${CYAN}ENVIRONMENT OVERRIDES:${RESET}"
+  echo "  CTF_REPO_DIR   Override repo path  (default: /opt/CTF_Public)"
+  echo "  CTF_BASE_DIR   Override workspace   (default: /opt/CTF)"
+  echo "  Example (dev): export CTF_REPO_DIR=~/github/CTF_Public"
+  echo ""
+  echo "${CYAN}ACTIVE PATHS:${RESET}"
+  echo "  Repo:      $REPO_DIR"
+  echo "  Workspace: $CTF_BASE"
+  echo ""
   echo "${CYAN}ADDING TOOLS TO CHECK:${RESET}"
   echo "  Edit REQUIRED_TOOLS array in this script."
   echo "  Format: \"command:display_name:apt_package\""
   echo ""
   echo "${CYAN}ADDING PLATFORMS:${RESET}"
   echo "  Edit KNOWN_PLATFORMS in ctf-env-functions.sh — that is the authority."
-  echo "  Re-run ctf-install to rebuild the /opt/CTF/ directory tree."
+  echo "  Re-run ctf-install to rebuild the CTF directory tree."
   echo ""
   echo "${CYAN}BACKUP LOCATION:${RESET}"
   echo "  $BACKUP_DIR"
@@ -342,7 +380,7 @@ run_patch_zshrc() {
 
 
 # =============================================================================
-# STEP 5 — BUILD /opt/CTF/ DIRECTORY TREE
+# STEP 5 — BUILD CTF DIRECTORY TREE
 # =============================================================================
 # TEACHING NOTE — This step looks the same but is now driven by a different
 # source of truth. Previously, it looped over a KNOWN_PLATFORMS array defined
@@ -354,16 +392,27 @@ run_patch_zshrc() {
 # add a platform. You add it to ctf-env-functions.sh, and the next time
 # ctf-install runs, it picks it up automatically.
 #
-# This pattern — code that is stable, data that changes — is one of the core
-# ideas behind scalable scripting. If you find yourself editing a script just
-# to change a list, the list should probably live somewhere else.
+# CTF_BASE is now resolved from CTF_BASE_DIR (if set) or defaults to
+# /opt/CTF — the same override pattern used for REPO_DIR. On a dev machine
+# that wants workspaces under ~/CTF, the user just exports CTF_BASE_DIR once.
+#
+# sudo is only used when writing to /opt/ — paths under $HOME are created
+# without elevated permissions.
 # =============================================================================
 run_build_directories() {
-  print_step "Building /opt/CTF/ Directory Tree"
+  print_step "Building CTF Directory Tree"
+  print_info "Workspace root: ${BOLD}${CTF_BASE}${RESET}"
+
+  local use_sudo=false
+  [[ "$CTF_BASE" == /opt/* ]] && use_sudo=true
 
   if [[ ! -d "$CTF_BASE" ]]; then
-    sudo mkdir -p "$CTF_BASE"
-    sudo chown -R "$USER":"$USER" "$CTF_BASE"
+    if $use_sudo; then
+      sudo mkdir -p "$CTF_BASE"
+      sudo chown -R "$USER":"$USER" "$CTF_BASE"
+    else
+      mkdir -p "$CTF_BASE"
+    fi
     print_ok "Created: ${BOLD}${CTF_BASE}${RESET}"
   else
     print_skip "${CTF_BASE} already exists"
@@ -527,5 +576,6 @@ echo "  ${BOLD}ctf-install --check${RESET}      Dependency check only"
 echo "  ${BOLD}ctf-sync${RESET}                 Pull latest repo changes"
 echo "  ${BOLD}ctf-help${RESET}                 List all session commands"
 echo ""
-echo "  ${DIM}Backups stored in: ${BACKUP_DIR}${RESET}"
+echo "  ${DIM}Repo:    ${REPO_DIR}${RESET}"
+echo "  ${DIM}Backups: ${BACKUP_DIR}${RESET}"
 echo ""
