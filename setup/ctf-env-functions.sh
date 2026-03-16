@@ -10,7 +10,7 @@
 #
 # COMMANDS:
 #   set-platform <code>    — Set active CTF platform (HTB, THM, etc.)
-#   set-box      <n>       — Set active box and create workspace
+#   set-box      <name>    — Set active box and create workspace
 #   set-address  <ip>      — Set target IP address
 #   ctf-status             — Display current session state
 #   ctf-clear              — Clear all session variables
@@ -55,40 +55,55 @@
 # =============================================================================
 # REPO DIR RESOLUTION
 # =============================================================================
-# TEACHING NOTE — This block runs every time a terminal session starts (because
-# this file is sourced by ~/.zshrc). It resolves and exports CTF_REPO_DIR so
-# all other scripts that read it get a consistent value.
+# TEACHING NOTE — This block runs every time a terminal session starts because
+# this file is sourced by ~/.zshrc. It resolves and exports CTF_REPO_DIR so
+# all other scripts that read it get a consistent value without each one
+# needing to repeat the detection logic independently.
 #
-# The three-pass check mirrors the logic in ctf-sync.sh and ctf-install.sh.
-# Keeping the same detection order across all three files means they all agree
-# on which directory is authoritative, regardless of which one runs first.
+# We don't prompt here (unlike ctf-sync.sh on a first run) because this file
+# is sourced non-interactively every time a terminal opens. A prompt at shell
+# startup would be disruptive and confusing. We fall back to the production
+# path silently instead — by the time a dev has run ctf-sync.sh once, the
+# repo exists on disk and the auto-detection finds it without any prompt.
 #
-# We don't prompt here (unlike ctf-sync.sh) because this file is sourced
-# non-interactively on terminal open. Prompting at shell startup would be
-# disruptive. Instead we fall back to the production path silently — by the
-# time a dev has run ctf-sync.sh once, the repo exists and auto-detection
-# finds it without needing a prompt.
+# The [[ -z "$CTF_REPO_DIR" ]] outer guard means we only run detection if the
+# variable isn't already set. This respects a value exported earlier in
+# ~/.zshrc or by the user's own environment, and avoids overwriting it on
+# every terminal open.
 # =============================================================================
 
 if [[ -z "$CTF_REPO_DIR" ]]; then
   if [[ -d "$HOME/github/CTF_Public" ]]; then
     export CTF_REPO_DIR="$HOME/github/CTF_Public"
-  elif [[ -d "/opt/CTF_Public" ]]; then
-    export CTF_REPO_DIR="/opt/CTF_Public"
   else
-    export CTF_REPO_DIR="/opt/CTF_Public"   # default before first sync
+    # TEACHING NOTE — Collapsed redundant elif/else. (Bug fix #1)
+    #
+    # The previous version had three branches:
+    #   elif [[ -d "/opt/CTF_Public" ]]; then export CTF_REPO_DIR="/opt/CTF_Public"
+    #   else                                   export CTF_REPO_DIR="/opt/CTF_Public"
+    #
+    # Both branches assigned the same value — the elif condition was checked
+    # but made no difference to the outcome. This is called dead code: it
+    # executes, but has no effect. Dead code is worth removing because it
+    # implies a distinction that doesn't exist, and makes readers wonder if
+    # the two cases were intended to behave differently.
+    #
+    # The fix collapses them into a single else. Whether /opt/CTF_Public
+    # already exists or not, the fallback is the same production path.
+    # If it doesn't exist yet, ctf-sync.sh will create it on first run.
+    export CTF_REPO_DIR="/opt/CTF_Public"
   fi
 fi
 
-# Base directory where all CTF workspaces live
+# Base directory where all CTF workspaces live.
 # TEACHING NOTE — CTF_BASE_DIR follows the same override pattern as CTF_REPO_DIR.
 # On a dev machine you might want workspaces under ~/CTF rather than /opt/CTF.
 # Export CTF_BASE_DIR before sourcing this file (or set it in your .zshrc above
 # the source line) to redirect all workspace creation automatically.
 CTF_BASE="${CTF_BASE_DIR:-/opt/CTF}"
 
-# Sub-directories created for every new box workspace
-# To add a new folder to every box: append to this array
+# Sub-directories created for every new box workspace.
+# To add a new folder to every box: append to this array.
 _CTF_BOX_DIRS=(
   "scans"
   "exploits"
@@ -99,8 +114,8 @@ _CTF_BOX_DIRS=(
 
 # Known platforms — format: "CODE:Full Name"
 # CODE is what you type (e.g. set-platform HTB)
-# Full Name is used in ctf-status and directory creation
-# To add a platform: append a new "CODE:Full Name" line
+# Full Name is used in ctf-status and directory creation.
+# To add a platform: append a new "CODE:Full Name" line.
 KNOWN_PLATFORMS=(
   "HTB:Hack The Box"
   "THM:TryHackMe"
@@ -183,6 +198,22 @@ _ctf_info() { echo "${_CTF_CYAN}[INFO]${_CTF_RESET}  $1"; }
 # we only replace it at the very end with `mv`.
 #
 # mktemp creates a uniquely named temp file — safer than hardcoding /tmp/foo.
+#
+# TEACHING NOTE — Why CTF_BASE is not persisted here. (Bug note #2)
+#
+# _ctf_persist intentionally only writes the four session state variables
+# (ADDRESS, PLATFORM, BOXNAME, BOX_DIR). CTF_BASE is a configuration value,
+# not session state — it reflects where your workspaces live, and that is
+# determined at startup by CTF_BASE_DIR (or the default /opt/CTF).
+#
+# If you want a non-default CTF_BASE to survive across terminal sessions,
+# the right place to set it is in ~/.zshrc, above the `source ~/.ctf_env`
+# line, like this:
+#   export CTF_BASE_DIR="$HOME/CTF"
+#   source ~/.ctf_env
+#
+# That way it's set before this file is sourced, and the CTF_BASE="${CTF_BASE_DIR:-...}"
+# line at the top of this file picks it up correctly every time.
 # =============================================================================
 
 _ctf_persist() {
@@ -191,7 +222,7 @@ _ctf_persist() {
 
   while IFS= read -r line; do
     case "$line" in
-      "export ADDRESS="*) echo "export ADDRESS=\"${ADDRESS}\""   ;;
+      "export ADDRESS="*)  echo "export ADDRESS=\"${ADDRESS}\""   ;;
       "export PLATFORM="*) echo "export PLATFORM=\"${PLATFORM}\"" ;;
       "export BOXNAME="*)  echo "export BOXNAME=\"${BOXNAME}\""   ;;
       "export BOX_DIR="*)  echo "export BOX_DIR=\"${BOX_DIR}\""   ;;
@@ -399,7 +430,7 @@ set-platform() {
 
 
 # =============================================================================
-# set-box <n>
+# set-box <name>
 # =============================================================================
 # TEACHING NOTE — Sanitizing user input for filesystem use.
 # Box names become directory names. You can't have spaces or special chars in
@@ -518,9 +549,24 @@ ctf-status() {
   local address_display="${ADDRESS:-${_CTF_DIM}not set${_CTF_RESET}}"
   local dir_display="${BOX_DIR:-${_CTF_DIM}not set${_CTF_RESET}}"
 
-  # Show which environment is active
+  # TEACHING NOTE — Env detection based on $HOME prefix, not a hardcoded path.
+  # (Refactor #5)
+  #
+  # The previous version checked:
+  #   if [[ "$CTF_REPO_DIR" == "$HOME/github/CTF_Public" ]]; then
+  #
+  # This works if your dev repo is always at exactly that path, but breaks
+  # silently for anyone using a different location — ~/dev/CTF_Public,
+  # ~/projects/CTF_Public, etc. Their environment would be labelled "prod"
+  # even though it's clearly a user-space dev setup.
+  #
+  # The better question to ask is: "Is this repo under the user's home
+  # directory?" That's what distinguishes a personal dev checkout from a
+  # system-wide production install under /opt/. The $HOME* glob matches
+  # any path that begins with the user's home directory, regardless of what
+  # comes after it.
   local env_label
-  if [[ "$CTF_REPO_DIR" == "$HOME/github/CTF_Public" ]]; then
+  if [[ "$CTF_REPO_DIR" == "$HOME"* ]]; then
     env_label="${_CTF_YELLOW}dev${_CTF_RESET}  ${_CTF_DIM}(${CTF_REPO_DIR})${_CTF_RESET}"
   else
     env_label="${_CTF_GREEN}prod${_CTF_RESET} ${_CTF_DIM}(${CTF_REPO_DIR})${_CTF_RESET}"
@@ -575,7 +621,7 @@ ctf-help() {
   echo ""
   echo "${_CTF_CYAN}Session Setup:${_CTF_RESET}"
   echo "  ${_CTF_BOLD}set-platform <code>${_CTF_RESET}    Set active platform (e.g. HTB, THM)"
-  echo "  ${_CTF_BOLD}set-box <n>${_CTF_RESET}         Set active box and create workspace"
+  echo "  ${_CTF_BOLD}set-box <name>${_CTF_RESET}         Set active box and create workspace"
   echo "  ${_CTF_BOLD}set-address <ip>${_CTF_RESET}       Set target IP address"
   echo ""
   echo "${_CTF_CYAN}Session Info:${_CTF_RESET}"
