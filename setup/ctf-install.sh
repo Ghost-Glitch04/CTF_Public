@@ -12,7 +12,7 @@
 #   2. Backup ~/.ctf_env    — saves to ~/.ctf_backups/ with timestamp
 #   3. Deploy ~/.ctf_env    — copies ctf-env-functions.sh into place
 #   4. Patch ~/.zshrc       — adds source line if not present
-#   5. Build /opt/CTF/      — platform directory tree
+#   5. Build CTF/           — platform directory tree
 #   6. Symlink all scripts  — everything in setup/ lands in /usr/local/bin/
 #   7. Run ctf-sync         — ensures repo is current
 #
@@ -29,8 +29,8 @@
 #
 # ADDING NEW TOOLS TO CHECK:
 #   Find the REQUIRED_TOOLS section below and add entries to the array.
-#   Format: "command_name:display_name:apt_package"
-#   Example: "sqlmap:SQLMap:sqlmap"
+#   Format: "command_name:display_name:apt_package:version_field"
+#   Example: "sqlmap:SQLMap:sqlmap:2"
 #
 # ADDING NEW PLATFORMS:
 #   Edit KNOWN_PLATFORMS in ctf-env-functions.sh — that file is the authority.
@@ -49,7 +49,7 @@
 #   - KNOWN_PLATFORMS was duplicated between the installer and the env file
 #
 # The refactored version separates concerns cleanly:
-#   - ctf-install.sh    = machine setup only (runs once)
+#   - ctf-install.sh       = machine setup only (runs once)
 #   - ctf-env-functions.sh = session commands (sourced every terminal)
 #
 # Now to update a session command:
@@ -119,7 +119,6 @@ fi
 # leak into the parent script. We only want KNOWN_PLATFORMS; sourcing the full
 # file in the main shell would load all the CTF functions into the installer's
 # namespace, which is messy. The subshell isolates the import cleanly.
-# Read KNOWN_PLATFORMS safely — IFS loop preserves entries that contain spaces
 
 # TEACHING NOTE — Word splitting is a common shell pitfall. When a command
 # substitution like $(...) is unquoted, the shell splits output on whitespace.
@@ -134,15 +133,15 @@ done < <( source "$CTF_ENV_SOURCE" 2>/dev/null; printf '%s\n' "${KNOWN_PLATFORMS
 
 # --- Required tools -----------------------------------------------------------
 # FORMAT: "command:display_name:apt_package:version_field"
-# To add a tool: append a new entry following this exact format
+# To add a tool: append a new entry following this exact format.
 #
-# TEACHING NOTE — Adding a 4th field for version parsing.
-# Different tools put their version number in different positions on line 1:
+# TEACHING NOTE — The 4th field controls which word of the version output to
+# display. Different tools format their version line differently:
 #   curl 8.5.0 ...       → field 2
 #   git version 2.51.0   → field 3
 #   GNU Wget 1.21.4 ...  → field 3
 #   Python 3.13.9        → field 2
-#   Nmap 7.x ...         → field 3 (and uses -V not --version)
+#   Nmap 7.x ...         → field 3 (also uses -V instead of --version)
 REQUIRED_TOOLS=(
   "curl:cURL:curl:2"
   "nmap:Nmap:nmap:3"
@@ -195,7 +194,7 @@ show_help() {
   echo ""
   echo "${CYAN}ADDING TOOLS TO CHECK:${RESET}"
   echo "  Edit REQUIRED_TOOLS array in this script."
-  echo "  Format: \"command:display_name:apt_package\""
+  echo "  Format: \"command:display_name:apt_package:version_field\""
   echo ""
   echo "${CYAN}ADDING PLATFORMS:${RESET}"
   echo "  Edit KNOWN_PLATFORMS in ctf-env-functions.sh — that is the authority."
@@ -219,8 +218,22 @@ show_help() {
 run_dependency_check() {
   print_step "Dependency Check"
 
+  # TEACHING NOTE — Removed the unused `present` array. (Refactor #7)
+  #
+  # The previous version declared `local present=()` and appended to it with
+  # `present+=("$cmd")` each time a tool was found. However, `present` was
+  # never read anywhere after being built — not printed, not returned, not
+  # passed to another function. It was dead code.
+  #
+  # Dead code has real costs: it makes readers wonder "what is this for?",
+  # and they may spend time tracing through the file looking for where
+  # `present` gets used, only to find it doesn't. Removing it makes the
+  # intent of the function immediately clear: we only care about what's
+  # missing, not what's present.
+  #
+  # The `missing` array stays because it drives the install suggestions block
+  # below. Every variable should earn its place.
   local missing=()
-  local present=()
 
   for entry in "${REQUIRED_TOOLS[@]}"; do
     local cmd="${entry%%:*}"
@@ -236,7 +249,6 @@ run_dependency_check() {
       # cause the assignment to echo itself to the terminal in some execution
       # contexts. Combining into `local var=$(...)` prevents this side effect.
       #
-      # vfield was parsed from the 4th segment of the REQUIRED_TOOLS entry above.
       # nmap uses -V; all others use --version.
       # awk -v f="$vfield" passes the field number as a variable so awk can
       # print the correct column without hardcoding it.
@@ -244,7 +256,6 @@ run_dependency_check() {
       [[ "$cmd" == "nmap" ]] && vflag="-V"
       local version=$(${cmd} ${vflag} 2>/dev/null | head -1 | awk -v f="$vfield" '{print $f}' | tr -d '(),')
       print_ok "${name} ${DIM}(${version})${RESET}"
-      present+=("$cmd")
     else
       print_warn "${name} ${DIM}— not found${RESET}"
       missing+=("${name}:${pkg}")
@@ -322,19 +333,9 @@ run_backup() {
 # =============================================================================
 # STEP 3 — DEPLOY ~/.ctf_env
 # =============================================================================
-# TEACHING NOTE — This is the biggest change in the refactor.
-# The old version wrote ~300 lines of session functions into ~/.ctf_env using
-# a heredoc. That had two problems:
-#
-#   1. The installer owned the content of session functions — changing
-#      set-box() meant editing ctf-install.sh and re-running it.
-#
-#   2. The heredoc required escaped dollar signs (\$var) and was difficult
-#      to read, test, or reason about in isolation.
-#
-# The new version does one thing: copy ctf-env-functions.sh to ~/.ctf_env.
-# That file is a proper, readable zsh script that you can open, test, and
-# edit independently. The installer just deploys it.
+# TEACHING NOTE — This step does one thing: copy ctf-env-functions.sh to
+# ~/.ctf_env. That file is a proper, readable zsh script that can be opened,
+# tested, and edited independently. The installer just deploys it.
 #
 # `cp` vs symlink: we copy rather than symlink because ~/.ctf_env is sourced
 # by every terminal session. A symlink would mean the repo must always be
@@ -382,22 +383,19 @@ run_patch_zshrc() {
 # =============================================================================
 # STEP 5 — BUILD CTF DIRECTORY TREE
 # =============================================================================
-# TEACHING NOTE — This step looks the same but is now driven by a different
-# source of truth. Previously, it looped over a KNOWN_PLATFORMS array defined
-# right here in ctf-install.sh. Now it loops over the KNOWN_PLATFORMS array
-# that was loaded at the top of this script from ctf-env-functions.sh.
+# TEACHING NOTE — sudo applied consistently across base dir and subdirs. (Bug fix #4)
 #
-# The loop body is identical. Only the data source changed — and that's
-# exactly what we want. The installer no longer needs to be edited when you
-# add a platform. You add it to ctf-env-functions.sh, and the next time
-# ctf-install runs, it picks it up automatically.
+# The previous version correctly used `sudo` when creating $CTF_BASE under
+# /opt/, but then used plain `mkdir` for all platform subdirectories inside
+# it. On a first run this worked by accident: the base was just created with
+# `sudo chown $USER`, so the user owned it. But on a re-run where $CTF_BASE
+# already existed and ownership hadn't been set, the subdir mkdir would fail.
 #
-# CTF_BASE is now resolved from CTF_BASE_DIR (if set) or defaults to
-# /opt/CTF — the same override pattern used for REPO_DIR. On a dev machine
-# that wants workspaces under ~/CTF, the user just exports CTF_BASE_DIR once.
-#
-# sudo is only used when writing to /opt/ — paths under $HOME are created
-# without elevated permissions.
+# The fix sets a `use_sudo` flag once based on whether CTF_BASE is under
+# /opt/, then applies it consistently to both the base directory creation
+# and the platform subdirectory loop. A single decision point — one flag —
+# controls all mkdir calls in this function. If the path ever changes, only
+# one line (the flag assignment) needs updating.
 # =============================================================================
 run_build_directories() {
   print_step "Building CTF Directory Tree"
@@ -423,7 +421,15 @@ run_build_directories() {
     local name="${entry##*:}"
     local pdir="${CTF_BASE}/${code}"
     if [[ ! -d "$pdir" ]]; then
-      mkdir -p "$pdir"
+      # TEACHING NOTE — $use_sudo applied to subdirs for consistency.
+      # If CTF_BASE required sudo, its subdirectories are under the same
+      # root and should use the same privilege level. Previously only the
+      # base directory used sudo, leaving the subdir loop unguarded.
+      if $use_sudo; then
+        sudo mkdir -p "$pdir"
+      else
+        mkdir -p "$pdir"
+      fi
       print_ok "Created: ${BOLD}${pdir}${RESET} ${DIM}(${name})${RESET}"
     else
       print_skip "${pdir} already exists"
@@ -435,10 +441,10 @@ run_build_directories() {
 # =============================================================================
 # STEP 6 — SYMLINK ALL SCRIPTS IN setup/ TO /usr/local/bin/
 # =============================================================================
-# TEACHING NOTE — Also unchanged. Auto-discovering *.sh in setup/ means you
-# never need to edit this function when you add a new script. Drop it in the
-# folder, run ctf-install, and it appears in PATH. The data (script files)
-# drives the behavior (symlinks created) without code changes.
+# TEACHING NOTE — Auto-discovering *.sh in setup/ means you never need to
+# edit this function when you add a new script. Drop it in the folder, run
+# ctf-install, and it appears in PATH. The data (script files) drives the
+# behavior (symlinks created) without any code changes.
 # =============================================================================
 run_symlinks() {
   print_step "Symlinking Tools to /usr/local/bin/"
@@ -482,17 +488,24 @@ run_symlinks() {
 # =============================================================================
 # STEP 7 — RUN ctf-sync TO ENSURE REPO IS CURRENT
 # =============================================================================
-# TEACHING NOTE — Two small fixes here from the original:
+# TEACHING NOTE — Corrected interpreter in the fallback path. (Bug fix #3)
 #
-#   1. The fallback filename is corrected from smart-sync.sh to ctf-sync.sh,
-#      matching the renamed file in your repo.
+# The previous version called `bash "$SETUP_DIR/ctf-sync.sh"` as a fallback
+# when ctf-sync wasn't yet in PATH. This is a high-severity bug: ctf-sync.sh
+# has a #!/bin/zsh shebang and uses zsh-specific syntax in several places:
 #
-#   2. The ordering note: ctf-sync runs AFTER symlinks are created (Step 6),
-#      so by the time we reach this step, ctf-sync is already in PATH from
-#      the symlink we just made. The `command -v ctf-sync` check will succeed
-#      on a re-run (symlink already existed) but also now succeeds on a first
-#      run if Step 6 completed cleanly. The fallback path handles the edge
-#      case where Step 6 failed or the symlink wasn't created for some reason.
+#   ${custom_dir/#\~/$HOME}   — parameter substitution with pattern anchoring
+#   "${(@s/./)new_ip}"        — zsh array splitting modifier (in env functions)
+#   "${1:u}"                  — zsh uppercase modifier
+#
+# bash does not support these constructs. Calling ctf-sync.sh under bash would
+# fail or silently misbehave on a first run — exactly the moment it matters
+# most. The fix is one word: zsh instead of bash.
+#
+# Why didn't this fail before? On a re-run (symlink already in PATH), the
+# `command -v ctf-sync` branch runs instead, calling the script correctly via
+# its shebang. The bash fallback only fires on a first install, which is an
+# easy code path to miss in testing.
 # =============================================================================
 run_sync() {
   print_step "Syncing Repo"
@@ -500,7 +513,7 @@ run_sync() {
   if command -v ctf-sync &>/dev/null; then
     ctf-sync
   elif [[ -f "$SETUP_DIR/ctf-sync.sh" ]]; then
-    bash "$SETUP_DIR/ctf-sync.sh"
+    zsh "$SETUP_DIR/ctf-sync.sh"
   else
     print_warn "ctf-sync not available — skipping."
     print_info "It will be available after this install completes."
@@ -553,11 +566,6 @@ run_symlinks
 run_sync
 
 # --- Done ---------------------------------------------------------------------
-# TEACHING NOTE — The completion summary is the user's first look at what
-# the toolkit can do. Update it any time you add a new command. It references
-# the new command names (set-address instead of set-target) because it should
-# always reflect the current state of ctf-env-functions.sh.
-# =============================================================================
 echo ""
 echo "${BOLD}${GREEN}=== Installation Complete ===${RESET}"
 echo ""
