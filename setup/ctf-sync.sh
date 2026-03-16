@@ -43,30 +43,32 @@ RESET='\033[0m'
 # =============================================================================
 # ARGUMENT PARSING
 # =============================================================================
-# TEACHING NOTE — Parse flags before resolving paths.
+# TEACHING NOTE — Parse ALL flags first, before any other logic runs.
 #
-# Flags need to be read before any path resolution happens, because the
-# --prod flag directly controls which path gets selected. If we resolved
-# the path first and parsed flags second, --prod would have no effect.
+# The previous version handled --help with a separate `if [[ "$1" == ... ]]`
+# check placed after path resolution. This created a subtle bug: flag
+# combinations like `ctf-sync --prod --help` would silently skip the help
+# output and proceed to sync, because $1 was "--prod", not "--help".
+# (Bug fix #2)
 #
-# We use a simple loop over "$@" (all positional arguments) rather than
-# getopts, because we only have a small number of known flags and no flags
-# that take values. getopts is worth reaching for when you have many options
-# or options with arguments (e.g. --dir /some/path). For two or three
-# boolean flags, a loop is clearer and has no dependencies.
+# The fix moves ALL flag handling into the argument parsing loop, using
+# boolean variables (FORCE_PROD, SHOW_HELP) that are then acted on at
+# the appropriate point later in the script. This is the same pattern
+# ctf-install.sh already used correctly — now both scripts are consistent.
 #
-# FORCE_PROD starts as false. If --prod is passed, it becomes true, and the
-# path resolution block below uses it to skip auto-detection entirely and
-# jump straight to the production path. This makes the flag's effect
-# explicit and easy to trace.
+# The rule to remember: flags should be parsed once, early, into named
+# booleans. Never check $1/$2 directly later in the script — by the time
+# you need the information, positional variables may have shifted or the
+# check may be reachable via multiple code paths with different $1 values.
 # =============================================================================
 
 FORCE_PROD=false
+SHOW_HELP=false
 
 for arg in "$@"; do
   case "$arg" in
-    --prod)   FORCE_PROD=true ;;
-    --help|-h) ;; # handled below after path resolution
+    --prod)    FORCE_PROD=true ;;
+    --help|-h) SHOW_HELP=true ;;
     *)
       echo "${RED}[ERROR]${RESET} Unknown argument: ${BOLD}${arg}${RESET}"
       echo "  Run ${BOLD}ctf-sync --help${RESET} for usage."
@@ -78,7 +80,7 @@ done
 # =============================================================================
 # INSTALL DIR RESOLUTION
 # =============================================================================
-# TEACHING NOTE — --prod short-circuits the detection chain. (New behaviour)
+# TEACHING NOTE — --prod short-circuits the detection chain.
 #
 # Without --prod, the detection order is:
 #   Pass 1: CTF_REPO_DIR already exported in the environment
@@ -87,21 +89,17 @@ done
 #   Pass 4: nothing found — prompt once on first run
 #
 # This ordering means the dev path always wins when both installs exist,
-# which is the right default for a machine that is primarily used for
-# development. But on a dual-install machine (e.g. a Kali VM with both
-# a personal dev checkout and a shared production install), there's no
-# way to reach the production install without an explicit signal.
+# which is the right default for a machine primarily used for development.
+# On a dual-install machine (e.g. a Kali VM), --prod provides an explicit
+# signal to bypass detection and target production directly.
 #
-# --prod provides that signal. When FORCE_PROD is true, we skip all
-# detection passes and assign /opt/CTF_Public directly. The check still
-# validates that the path exists and is a real git repo before proceeding
-# — we don't want --prod to silently succeed on a machine where production
-# was never installed.
+# The existence check after FORCE_PROD assignment ensures that --prod
+# fails loudly if production was never installed, rather than creating
+# a new unexpected directory or proceeding with a broken path.
 # =============================================================================
 
 if $FORCE_PROD; then
   INSTALL_DIR="/opt/CTF_Public"
-  # Validate immediately — fail loudly if prod doesn't exist
   if [[ ! -d "$INSTALL_DIR" ]]; then
     echo "${RED}[ERROR]${RESET} --prod specified but no production install found at:"
     echo "         ${BOLD}${INSTALL_DIR}${RESET}"
@@ -136,7 +134,12 @@ else
 fi
 
 # --- Help ---------------------------------------------------------------------
-if [[ "$1" == "--help" || "$1" == "-h" ]]; then
+# TEACHING NOTE — Help is now gated on SHOW_HELP, not on $1.
+# Because all flags were parsed into booleans above, we can check SHOW_HELP
+# here regardless of what order the flags were passed in. This correctly
+# handles `ctf-sync --prod --help`, `ctf-sync --help --prod`, and
+# `ctf-sync --help` all the same way — show help and exit.
+if $SHOW_HELP; then
   echo ""
   echo "${BOLD}ctf-sync.sh${RESET} — CTF Repo CTF Sync"
   echo ""
@@ -204,6 +207,21 @@ if [[ -d "${INSTALL_DIR}/.git" ]]; then
   if echo "$PULL_OUTPUT" | grep -q "Already up to date"; then
     echo "${GREEN}[OK]${RESET}    Already up to date — no changes pulled."
   else
+    # TEACHING NOTE — Removed unused CHANGED_FILES variable. (Refactor #5)
+    #
+    # The previous version computed:
+    #   CHANGED_FILES=$(echo "$PULL_OUTPUT" | grep -E ... | wc -l | tr -d ' ')
+    #
+    # This ran a three-stage subshell pipeline (grep → wc → tr) and stored
+    # the result in CHANGED_FILES — but then never used that variable anywhere.
+    # The file list was printed directly from $PULL_OUTPUT on the very next
+    # line, making CHANGED_FILES pure dead code.
+    #
+    # Removing it is a small but meaningful improvement: the pipeline had real
+    # cost (three forked processes), and a reader seeing CHANGED_FILES would
+    # naturally search for where it's used, finding nothing. Dead code that
+    # looks like it might matter is more confusing than dead code that's
+    # obviously unused.
     echo "${GREEN}[OK]${RESET}    Pull successful."
     echo ""
     echo "${DIM}  Changed files:${RESET}"
