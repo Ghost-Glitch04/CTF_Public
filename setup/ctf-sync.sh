@@ -9,7 +9,8 @@
 #   Then    → fixes ownership and makes all scripts executable
 #
 # USAGE:
-#   ./ctf-sync.sh              # uses defaults below
+#   ./ctf-sync.sh              # auto-detect install (dev path wins if both exist)
+#   ./ctf-sync.sh --prod       # force production path (/opt/CTF_Public)
 #   ./ctf-sync.sh --help       # show help
 #
 # DEV vs PRODUCTION:
@@ -18,6 +19,10 @@
 #   or if CTF_REPO_DIR is already exported in the environment.
 #   On a brand new dev machine (no repo yet), the script will prompt for
 #   an install path so the clone lands in the right place from the start.
+#
+#   If BOTH a dev and production install exist on the same machine (e.g. a
+#   Kali VM used for both purposes), use --prod to explicitly target the
+#   production install. Without it, the dev path always takes priority.
 #
 # REPO: https://github.com/Ghost-Glitch04/CTF_Public
 # =============================================================================
@@ -36,37 +41,76 @@ DIM='\033[2m'
 RESET='\033[0m'
 
 # =============================================================================
-# INSTALL DIR RESOLUTION
+# ARGUMENT PARSING
 # =============================================================================
-# TEACHING NOTE — Inline if/elif/else replaces the previous _resolve_install_dir
-# function. (Refactor #6)
+# TEACHING NOTE — Parse flags before resolving paths.
 #
-# The original version wrapped this logic in a function called exactly once,
-# immediately after its definition. A function is the right tool when you need
-# to reuse logic in multiple places, or when the logic is complex enough to
-# deserve its own name and scope. Neither was true here — it ran once, and the
-# logic is a simple layered fallback that reads naturally top-to-bottom.
+# Flags need to be read before any path resolution happens, because the
+# --prod flag directly controls which path gets selected. If we resolved
+# the path first and parsed flags second, --prod would have no effect.
 #
-# Using a plain if/elif/else block instead has two advantages:
-#   1. Consistency — ctf-install.sh solves the same problem the same way,
-#      making the codebase easier to read as a whole.
-#   2. Cleanliness — functions defined in a script persist for the lifetime
-#      of that script's execution. _resolve_install_dir served no purpose
-#      after being called and left an unused name in the namespace.
+# We use a simple loop over "$@" (all positional arguments) rather than
+# getopts, because we only have a small number of known flags and no flags
+# that take values. getopts is worth reaching for when you have many options
+# or options with arguments (e.g. --dir /some/path). For two or three
+# boolean flags, a loop is clearer and has no dependencies.
 #
-# The logic itself is unchanged — same four passes, same prompt fallback.
-# Only the structure changed.
-#
-# Pass 1: CTF_REPO_DIR already set in the environment (user or prior session)
-# Pass 2: Auto-detect ~/github/CTF_Public on disk (known dev path)
-# Pass 3: Auto-detect /opt/CTF_Public on disk (production path)
-# Pass 4: Nothing found — prompt once so the clone lands in the right place
-#
-# The prompt only fires on a brand new machine with no repo anywhere on disk.
-# On all subsequent runs, one of the first three passes will match.
+# FORCE_PROD starts as false. If --prod is passed, it becomes true, and the
+# path resolution block below uses it to skip auto-detection entirely and
+# jump straight to the production path. This makes the flag's effect
+# explicit and easy to trace.
 # =============================================================================
 
-if [[ -n "$CTF_REPO_DIR" ]]; then
+FORCE_PROD=false
+
+for arg in "$@"; do
+  case "$arg" in
+    --prod)   FORCE_PROD=true ;;
+    --help|-h) ;; # handled below after path resolution
+    *)
+      echo "${RED}[ERROR]${RESET} Unknown argument: ${BOLD}${arg}${RESET}"
+      echo "  Run ${BOLD}ctf-sync --help${RESET} for usage."
+      exit 1
+      ;;
+  esac
+done
+
+# =============================================================================
+# INSTALL DIR RESOLUTION
+# =============================================================================
+# TEACHING NOTE — --prod short-circuits the detection chain. (New behaviour)
+#
+# Without --prod, the detection order is:
+#   Pass 1: CTF_REPO_DIR already exported in the environment
+#   Pass 2: ~/github/CTF_Public exists on disk (dev path)
+#   Pass 3: /opt/CTF_Public exists on disk (production path)
+#   Pass 4: nothing found — prompt once on first run
+#
+# This ordering means the dev path always wins when both installs exist,
+# which is the right default for a machine that is primarily used for
+# development. But on a dual-install machine (e.g. a Kali VM with both
+# a personal dev checkout and a shared production install), there's no
+# way to reach the production install without an explicit signal.
+#
+# --prod provides that signal. When FORCE_PROD is true, we skip all
+# detection passes and assign /opt/CTF_Public directly. The check still
+# validates that the path exists and is a real git repo before proceeding
+# — we don't want --prod to silently succeed on a machine where production
+# was never installed.
+# =============================================================================
+
+if $FORCE_PROD; then
+  INSTALL_DIR="/opt/CTF_Public"
+  # Validate immediately — fail loudly if prod doesn't exist
+  if [[ ! -d "$INSTALL_DIR" ]]; then
+    echo "${RED}[ERROR]${RESET} --prod specified but no production install found at:"
+    echo "         ${BOLD}${INSTALL_DIR}${RESET}"
+    echo ""
+    echo "  To set up a production install, run without --prod first, or:"
+    echo "  ${BOLD}sudo git clone ${REPO_URL} ${INSTALL_DIR}${RESET}"
+    exit 1
+  fi
+elif [[ -n "$CTF_REPO_DIR" ]]; then
   INSTALL_DIR="$CTF_REPO_DIR"
 elif [[ -d "$HOME/github/CTF_Public" ]]; then
   INSTALL_DIR="$HOME/github/CTF_Public"
@@ -74,15 +118,13 @@ elif [[ -d "/opt/CTF_Public" ]]; then
   INSTALL_DIR="/opt/CTF_Public"
 else
   # TEACHING NOTE — Prompting as a last resort, not a first resort.
-  # We only reach this branch when no repo exists anywhere on disk. Rather
-  # than silently defaulting to /opt/ on a dev machine, we ask once.
-  # Empty input accepts the production default via the :- fallback operator.
+  # We only reach this branch when no repo exists anywhere on disk and
+  # --prod was not passed. Rather than silently defaulting to /opt/ on a
+  # dev machine, we ask once. Empty input accepts the production default.
   #
   # Tilde expansion: the `read` builtin stores input as a literal string —
-  # it does NOT expand shell metacharacters like ~. If a user types
-  # ~/github/CTF_Public, the variable holds the literal characters "~/"
-  # rather than "/home/username/". The ${var/#\~/$HOME} substitution fixes
-  # this by replacing a leading ~ with the expanded value of $HOME.
+  # it does NOT expand shell metacharacters like ~. The ${var/#\~/$HOME}
+  # substitution replaces a leading ~ with the expanded value of $HOME.
   echo ""
   echo "${CYAN}[SETUP]${RESET}  No existing repo found. Where should it be cloned?"
   echo "         ${DIM}Production default: /opt/CTF_Public${RESET}"
@@ -105,12 +147,17 @@ if [[ "$1" == "--help" || "$1" == "-h" ]]; then
   echo "  ${CYAN}Target:${RESET}  $INSTALL_DIR"
   echo ""
   echo "  ${BOLD}Usage:${RESET}"
-  echo "  ./ctf-sync.sh          Run sync"
-  echo "  ./ctf-sync.sh --help   Show this message"
+  echo "  ctf-sync              Auto-detect install location"
+  echo "  ctf-sync --prod       Force production path (/opt/CTF_Public)"
+  echo "  ctf-sync --help       Show this message"
+  echo ""
+  echo "  ${BOLD}Dual-Install Note:${RESET}"
+  echo "  If both ~/github/CTF_Public and /opt/CTF_Public exist, the dev"
+  echo "  path is used by default. Use --prod to explicitly target prod."
   echo ""
   echo "  ${BOLD}Dev Override:${RESET}"
   echo "  export CTF_REPO_DIR=~/github/CTF_Public"
-  echo "  ./ctf-sync.sh"
+  echo "  ctf-sync"
   echo ""
   exit 0
 fi
@@ -120,6 +167,18 @@ echo ""
 echo "${BOLD}${CYAN}=== CTF Repo CTF Sync ===${RESET}"
 echo "${DIM}  Repo:   $REPO_URL${RESET}"
 echo "${DIM}  Target: $INSTALL_DIR${RESET}"
+
+# TEACHING NOTE — Surface the active mode clearly in the header.
+# When --prod is passed, print a visible label so there's no ambiguity
+# about which install is being targeted. This is especially important on
+# a dual-install machine where the wrong target could cause real confusion.
+if $FORCE_PROD; then
+  echo "${YELLOW}  Mode:   production (--prod)${RESET}"
+elif [[ "$INSTALL_DIR" == "$HOME"* ]]; then
+  echo "${DIM}  Mode:   dev (auto-detected)${RESET}"
+else
+  echo "${DIM}  Mode:   production (auto-detected)${RESET}"
+fi
 echo ""
 
 # --- Step 1: Clone or Pull ----------------------------------------------------
@@ -130,11 +189,9 @@ if [[ -d "${INSTALL_DIR}/.git" ]]; then
 
   cd "$INSTALL_DIR" || { echo "${RED}[ERROR]${RESET} Cannot cd into $INSTALL_DIR"; exit 1; }
 
-  # Show current branch
   CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
   echo "${DIM}  Branch: $CURRENT_BRANCH${RESET}"
 
-  # Capture git pull output
   PULL_OUTPUT=$(git pull origin "$CURRENT_BRANCH" 2>&1)
   PULL_EXIT=$?
 
@@ -144,7 +201,6 @@ if [[ -d "${INSTALL_DIR}/.git" ]]; then
     exit 1
   fi
 
-  # Check if anything actually changed
   if echo "$PULL_OUTPUT" | grep -q "Already up to date"; then
     echo "${GREEN}[OK]${RESET}    Already up to date — no changes pulled."
   else
@@ -172,7 +228,6 @@ else
   echo "${CYAN}[CLONE]${RESET} No local repo found. Cloning fresh copy..."
   echo ""
 
-  # Use sudo only for /opt — dev paths under $HOME don't need it
   if [[ "$INSTALL_DIR" == /opt/* ]]; then
     sudo git clone "$REPO_URL" "$INSTALL_DIR" 2>&1
   else
@@ -230,19 +285,6 @@ echo "  ${CYAN}Location:${RESET}  $INSTALL_DIR"
 echo "  ${CYAN}Owner:${RESET}     $REPO_OWNER"
 echo "  ${CYAN}Scripts:${RESET}   $TOTAL executable"
 echo ""
-
-# TEACHING NOTE — Conditional sudo in the symlink tip. (Refactor #8)
-#
-# The previous version always printed `sudo ln -sf ...` regardless of where
-# INSTALL_DIR resolved to. On a dev machine where INSTALL_DIR is under $HOME,
-# sudo is unnecessary — you own the file and /usr/local/bin is writable by
-# your user if sudo was used to create the symlink originally. Printing sudo
-# unconditionally implies elevated privileges are always required, which is
-# misleading and trains a habit of reaching for sudo when it isn't needed.
-#
-# The fix: check whether INSTALL_DIR is a system path (/opt/*) or a user
-# path. Show sudo only when the path genuinely requires it. The produced tip
-# is now accurate on both dev and production machines.
 echo "  ${DIM}Tip: Add this to your toolkit:${RESET}"
 if [[ "$INSTALL_DIR" == /opt/* ]]; then
   echo "  ${BOLD}sudo ln -sf ${INSTALL_DIR}/setup/ctf-sync.sh /usr/local/bin/ctf-sync${RESET}"
