@@ -17,15 +17,20 @@
 #   7. Run ctf-sync         — ensures repo is current
 #
 # USAGE:
-#   First time:   chmod +x ctf-install.sh && ./ctf-install.sh
-#   Re-run:       ctf-install   (after first install, symlink is available)
-#   Help:         ctf-install --help
+#   ./ctf-install.sh              # auto-detect install location
+#   ./ctf-install.sh --prod       # force production path (/opt/CTF_Public)
+#   ./ctf-install.sh --check      # dependency check only, no changes made
+#   ./ctf-install.sh --help       # show help
 #
 # DEV vs PRODUCTION:
 #   Production machines expect the repo at /opt/CTF_Public (default).
 #   Dev machines are detected automatically if ~/github/CTF_Public exists,
 #   or if CTF_REPO_DIR is already exported before the script runs.
 #   CTF_BASE_DIR can similarly override where workspaces are created.
+#
+#   If BOTH a dev and production install exist on the same machine (e.g. a
+#   Kali VM used for both purposes), use --prod to explicitly target the
+#   production install. Without it, the dev path always takes priority.
 #
 # ADDING NEW TOOLS TO CHECK:
 #   Find the REQUIRED_TOOLS section below and add entries to the array.
@@ -61,33 +66,65 @@
 
 
 # =============================================================================
-# SECTION 1 — CONFIGURATION
+# SECTION 1 — ARGUMENT PARSING
 # =============================================================================
-# TEACHING NOTE — Resolving REPO_DIR across dev and production environments.
+# TEACHING NOTE — Parse flags before resolving any paths.
 #
-# Rather than a single hardcoded path, we resolve REPO_DIR in three passes:
+# This mirrors the same pattern used in ctf-sync.sh. Flags must be read
+# first because FORCE_PROD directly controls which path gets resolved.
+# Parsing after resolution would mean the flag arrives too late to matter.
 #
-#   Pass 1: CTF_REPO_DIR already set in the environment — honour it directly.
-#           A dev can export CTF_REPO_DIR before running the installer and it
-#           will be used without any auto-detection needed.
+# --prod and --check are not mutually exclusive here — you could run
+# `ctf-install --check --prod` to do a dependency check while also
+# confirming that the production path resolution logic would be used.
+# In practice --check exits early so --prod has no visible effect in that
+# combination, but accepting both together avoids a confusing error.
 #
-#   Pass 2: Auto-detect the known dev path (~/github/CTF_Public).
-#           If that directory exists, we're on a dev machine — use it.
-#
-#   Pass 3: Fall back to the production path (/opt/CTF_Public).
-#           This is the default for any machine that hasn't set CTF_REPO_DIR
-#           and doesn't have the repo under ~/github/.
-#
-# CTF_BASE follows the same pattern via CTF_BASE_DIR, so workspace directories
-# can be redirected on dev machines without touching the installer code.
-#
-# This approach means production machines require zero configuration changes —
-# they fall through all detection passes and land on the correct defaults.
-# Dev machines are handled automatically after the first ctf-sync.sh run.
+# Unknown arguments exit with a clear error rather than being silently
+# ignored. Silent ignoring of unknown flags is a common source of
+# "I thought I passed --prod but it didn't do anything" bugs.
 # =============================================================================
 
-# --- Resolve repo directory ---------------------------------------------------
-if [[ -n "$CTF_REPO_DIR" ]]; then
+FORCE_PROD=false
+CHECK_ONLY=false
+SHOW_HELP=false
+
+for arg in "$@"; do
+  case "$arg" in
+    --prod)    FORCE_PROD=true ;;
+    --check)   CHECK_ONLY=true ;;
+    --help|-h) SHOW_HELP=true ;;
+    *)
+      echo "\033[0;31m[ERROR]\033[0m Unknown argument: ${arg}"
+      echo "  Run ${arg} ctf-install --help for usage."
+      exit 1
+      ;;
+  esac
+done
+
+# =============================================================================
+# SECTION 2 — PATH RESOLUTION
+# =============================================================================
+# TEACHING NOTE — --prod short-circuits auto-detection. (New behaviour)
+#
+# The detection chain is identical to ctf-sync.sh. Keeping the same logic
+# in both files means they always agree on which directory is authoritative.
+# The --prod flag bypasses all detection and hard-codes the production path,
+# with an immediate existence check so a misconfigured --prod fails loudly
+# rather than proceeding with a broken REPO_DIR.
+# =============================================================================
+
+if $FORCE_PROD; then
+  REPO_DIR="/opt/CTF_Public"
+  if [[ ! -d "$REPO_DIR" ]]; then
+    echo "\033[0;31m[ERROR]\033[0m --prod specified but no production install found at:"
+    echo "         ${REPO_DIR}"
+    echo ""
+    echo "  To set up a production install, run without --prod first, or clone manually:"
+    echo "  sudo git clone https://github.com/Ghost-Glitch04/CTF_Public ${REPO_DIR}"
+    exit 1
+  fi
+elif [[ -n "$CTF_REPO_DIR" ]]; then
   REPO_DIR="$CTF_REPO_DIR"
 elif [[ -d "$HOME/github/CTF_Public" ]]; then
   REPO_DIR="$HOME/github/CTF_Public"
@@ -96,6 +133,10 @@ else
 fi
 
 # --- Resolve CTF base (workspace) directory -----------------------------------
+# TEACHING NOTE — CTF_BASE_DIR follows the same override pattern as CTF_REPO_DIR.
+# When --prod is passed, a dev may still want workspaces under /opt/CTF rather
+# than their usual ~/CTF. CTF_BASE_DIR gives explicit control when needed;
+# otherwise it falls back to the standard production workspace path.
 CTF_BASE="${CTF_BASE_DIR:-/opt/CTF}"
 
 # --- Derived paths (all relative to REPO_DIR — never need editing) ------------
@@ -119,13 +160,10 @@ fi
 # leak into the parent script. We only want KNOWN_PLATFORMS; sourcing the full
 # file in the main shell would load all the CTF functions into the installer's
 # namespace, which is messy. The subshell isolates the import cleanly.
-
-# TEACHING NOTE — Word splitting is a common shell pitfall. When a command
-# substitution like $(...) is unquoted, the shell splits output on whitespace.
-# "HTB:Hack The Box" would become three elements: "HTB:Hack", "The", "Box".
-# Reading line-by-line with a while/read loop preserves each full entry intact,
-# regardless of spaces in the platform full name.
-# Note: mapfile is bash-only. This script uses zsh, so we use the portable loop.
+#
+# Word splitting note: reading line-by-line with a while/read loop preserves
+# entries that contain spaces (e.g. "HTB:Hack The Box") intact. mapfile is
+# bash-only, so we use this portable approach for zsh.
 KNOWN_PLATFORMS=()
 while IFS= read -r entry; do
   [[ -n "$entry" ]] && KNOWN_PLATFORMS+=("$entry")
@@ -134,14 +172,6 @@ done < <( source "$CTF_ENV_SOURCE" 2>/dev/null; printf '%s\n' "${KNOWN_PLATFORMS
 # --- Required tools -----------------------------------------------------------
 # FORMAT: "command:display_name:apt_package:version_field"
 # To add a tool: append a new entry following this exact format.
-#
-# TEACHING NOTE — The 4th field controls which word of the version output to
-# display. Different tools format their version line differently:
-#   curl 8.5.0 ...       → field 2
-#   git version 2.51.0   → field 3
-#   GNU Wget 1.21.4 ...  → field 3
-#   Python 3.13.9        → field 2
-#   Nmap 7.x ...         → field 3 (also uses -V instead of --version)
 REQUIRED_TOOLS=(
   "curl:cURL:curl:2"
   "nmap:Nmap:nmap:3"
@@ -160,12 +190,6 @@ DIM='\033[2m'
 RESET='\033[0m'
 
 # --- Helpers ------------------------------------------------------------------
-# TEACHING NOTE — The installer has its own print helpers (print_ok, print_err)
-# that are separate from the CTF session helpers (_ctf_ok, _ctf_err) in the
-# env file. They're intentionally different: the installer runs as a script,
-# the session functions run in an interactive shell. Keeping them separate
-# avoids the installer accidentally calling functions that haven't been loaded
-# yet, and keeps each file's namespace clean and self-contained.
 print_ok()   { echo "${GREEN}[OK]${RESET}    $1"; }
 print_skip() { echo "${DIM}[SKIP]  $1${RESET}"; }
 print_warn() { echo "${YELLOW}[WARN]${RESET}  $1"; }
@@ -179,9 +203,14 @@ show_help() {
   echo "${BOLD}ctf-install.sh${RESET} — CTF Toolkit Machine Installer"
   echo ""
   echo "${CYAN}USAGE:${RESET}"
-  echo "  ./ctf-install.sh          Run full installation"
-  echo "  ./ctf-install.sh --help   Show this message"
-  echo "  ./ctf-install.sh --check  Dependency check only, no changes made"
+  echo "  ./ctf-install.sh              Run full installation (auto-detect path)"
+  echo "  ./ctf-install.sh --prod       Run installation targeting /opt/CTF_Public"
+  echo "  ./ctf-install.sh --check      Dependency check only, no changes made"
+  echo "  ./ctf-install.sh --help       Show this message"
+  echo ""
+  echo "${CYAN}DUAL-INSTALL NOTE:${RESET}"
+  echo "  If both ~/github/CTF_Public and /opt/CTF_Public exist, the dev"
+  echo "  path is used by default. Pass --prod to explicitly target prod."
   echo ""
   echo "${CYAN}ENVIRONMENT OVERRIDES:${RESET}"
   echo "  CTF_REPO_DIR   Override repo path  (default: /opt/CTF_Public)"
@@ -205,34 +234,18 @@ show_help() {
   echo ""
 }
 
+if $SHOW_HELP; then
+  show_help
+  exit 0
+fi
+
 
 # =============================================================================
 # STEP 1 — DEPENDENCY CHECK
 # =============================================================================
-# TEACHING NOTE — Nothing about this step changes from the original.
-# It's already doing one job cleanly: checking for required tools and
-# reporting what's missing. It doesn't write files, modify state, or depend
-# on KNOWN_PLATFORMS. Good code doesn't need to change just because
-# other parts of the system were refactored.
-# =============================================================================
 run_dependency_check() {
   print_step "Dependency Check"
 
-  # TEACHING NOTE — Removed the unused `present` array. (Refactor #7)
-  #
-  # The previous version declared `local present=()` and appended to it with
-  # `present+=("$cmd")` each time a tool was found. However, `present` was
-  # never read anywhere after being built — not printed, not returned, not
-  # passed to another function. It was dead code.
-  #
-  # Dead code has real costs: it makes readers wonder "what is this for?",
-  # and they may spend time tracing through the file looking for where
-  # `present` gets used, only to find it doesn't. Removing it makes the
-  # intent of the function immediately clear: we only care about what's
-  # missing, not what's present.
-  #
-  # The `missing` array stays because it drives the install suggestions block
-  # below. Every variable should earn its place.
   local missing=()
 
   for entry in "${REQUIRED_TOOLS[@]}"; do
@@ -244,14 +257,6 @@ run_dependency_check() {
     local vfield="${rest2##*:}"
 
     if command -v "$cmd" &>/dev/null; then
-      # TEACHING NOTE — Declare and assign local variables on the same line.
-      # In zsh, `local var` followed by `var=$(...)` on separate lines can
-      # cause the assignment to echo itself to the terminal in some execution
-      # contexts. Combining into `local var=$(...)` prevents this side effect.
-      #
-      # nmap uses -V; all others use --version.
-      # awk -v f="$vfield" passes the field number as a variable so awk can
-      # print the correct column without hardcoding it.
       local vflag="--version"
       [[ "$cmd" == "nmap" ]] && vflag="-V"
       local version=$(${cmd} ${vflag} 2>/dev/null | head -1 | awk -v f="$vfield" '{print $f}' | tr -d '(),')
@@ -287,7 +292,7 @@ run_dependency_check() {
     print_info "Install them when ready and re-run ${BOLD}ctf-install${RESET} to verify."
   fi
 
-  if [[ "$1" == "--check-only" ]]; then
+  if $CHECK_ONLY; then
     echo ""
     exit 0
   fi
@@ -296,10 +301,6 @@ run_dependency_check() {
 
 # =============================================================================
 # STEP 2 — BACKUP ~/.ctf_env
-# =============================================================================
-# TEACHING NOTE — Also unchanged. It does one thing: back up a file.
-# It doesn't care what's in ~/.ctf_env, who wrote it, or what replaces it.
-# That independence is why it needs no changes — isolation pays off here.
 # =============================================================================
 run_backup() {
   print_step "Backing Up ~/.ctf_env"
@@ -333,14 +334,6 @@ run_backup() {
 # =============================================================================
 # STEP 3 — DEPLOY ~/.ctf_env
 # =============================================================================
-# TEACHING NOTE — This step does one thing: copy ctf-env-functions.sh to
-# ~/.ctf_env. That file is a proper, readable zsh script that can be opened,
-# tested, and edited independently. The installer just deploys it.
-#
-# `cp` vs symlink: we copy rather than symlink because ~/.ctf_env is sourced
-# by every terminal session. A symlink would mean the repo must always be
-# present and mounted — a copy works even if the repo is temporarily missing.
-# =============================================================================
 run_deploy_env() {
   print_step "Deploying ~/.ctf_env"
 
@@ -360,12 +353,6 @@ run_deploy_env() {
 # =============================================================================
 # STEP 4 — PATCH ~/.zshrc
 # =============================================================================
-# TEACHING NOTE — Also unchanged. The source line it writes still works
-# because ~/.ctf_env still exists at the same path — we just changed what's
-# in it. The interface (the path) stayed the same; only the implementation
-# (how the file gets its content) changed. Good design insulates callers
-# from implementation details.
-# =============================================================================
 run_patch_zshrc() {
   print_step "Patching ~/.zshrc"
 
@@ -383,19 +370,10 @@ run_patch_zshrc() {
 # =============================================================================
 # STEP 5 — BUILD CTF DIRECTORY TREE
 # =============================================================================
-# TEACHING NOTE — sudo applied consistently across base dir and subdirs. (Bug fix #4)
-#
-# The previous version correctly used `sudo` when creating $CTF_BASE under
-# /opt/, but then used plain `mkdir` for all platform subdirectories inside
-# it. On a first run this worked by accident: the base was just created with
-# `sudo chown $USER`, so the user owned it. But on a re-run where $CTF_BASE
-# already existed and ownership hadn't been set, the subdir mkdir would fail.
-#
-# The fix sets a `use_sudo` flag once based on whether CTF_BASE is under
-# /opt/, then applies it consistently to both the base directory creation
-# and the platform subdirectory loop. A single decision point — one flag —
-# controls all mkdir calls in this function. If the path ever changes, only
-# one line (the flag assignment) needs updating.
+# TEACHING NOTE — $use_sudo applied consistently to base dir and all subdirs.
+# Whether CTF_BASE requires elevated permissions is determined once and stored
+# in a flag, then used uniformly throughout the function. A single decision
+# point prevents the base and subdirs from ever getting out of sync.
 # =============================================================================
 run_build_directories() {
   print_step "Building CTF Directory Tree"
@@ -421,10 +399,6 @@ run_build_directories() {
     local name="${entry##*:}"
     local pdir="${CTF_BASE}/${code}"
     if [[ ! -d "$pdir" ]]; then
-      # TEACHING NOTE — $use_sudo applied to subdirs for consistency.
-      # If CTF_BASE required sudo, its subdirectories are under the same
-      # root and should use the same privilege level. Previously only the
-      # base directory used sudo, leaving the subdir loop unguarded.
       if $use_sudo; then
         sudo mkdir -p "$pdir"
       else
@@ -440,11 +414,6 @@ run_build_directories() {
 
 # =============================================================================
 # STEP 6 — SYMLINK ALL SCRIPTS IN setup/ TO /usr/local/bin/
-# =============================================================================
-# TEACHING NOTE — Auto-discovering *.sh in setup/ means you never need to
-# edit this function when you add a new script. Drop it in the folder, run
-# ctf-install, and it appears in PATH. The data (script files) drives the
-# behavior (symlinks created) without any code changes.
 # =============================================================================
 run_symlinks() {
   print_step "Symlinking Tools to /usr/local/bin/"
@@ -488,32 +457,32 @@ run_symlinks() {
 # =============================================================================
 # STEP 7 — RUN ctf-sync TO ENSURE REPO IS CURRENT
 # =============================================================================
-# TEACHING NOTE — Corrected interpreter in the fallback path. (Bug fix #3)
+# TEACHING NOTE — Threading --prod through to ctf-sync.
 #
-# The previous version called `bash "$SETUP_DIR/ctf-sync.sh"` as a fallback
-# when ctf-sync wasn't yet in PATH. This is a high-severity bug: ctf-sync.sh
-# has a #!/bin/zsh shebang and uses zsh-specific syntax in several places:
+# When ctf-install is run with --prod, Step 7 must pass that flag along to
+# ctf-sync. If it didn't, ctf-sync would run its own auto-detection and
+# potentially target the dev path instead of the production path the user
+# explicitly asked for — silently undoing the intent of --prod.
 #
-#   ${custom_dir/#\~/$HOME}   — parameter substitution with pattern anchoring
-#   "${(@s/./)new_ip}"        — zsh array splitting modifier (in env functions)
-#   "${1:u}"                  — zsh uppercase modifier
+# We store the flag in a variable (SYNC_FLAGS) so the logic stays in one
+# place and is easy to extend if more flags are added in future. The
+# variable is empty when --prod is not set, so the ctf-sync call is
+# identical to the old behaviour in that case.
 #
-# bash does not support these constructs. Calling ctf-sync.sh under bash would
-# fail or silently misbehave on a first run — exactly the moment it matters
-# most. The fix is one word: zsh instead of bash.
-#
-# Why didn't this fail before? On a re-run (symlink already in PATH), the
-# `command -v ctf-sync` branch runs instead, calling the script correctly via
-# its shebang. The bash fallback only fires on a first install, which is an
-# easy code path to miss in testing.
+# The fallback also uses zsh (not bash) because ctf-sync.sh uses
+# zsh-specific syntax. See the earlier bug fix note for details.
 # =============================================================================
 run_sync() {
   print_step "Syncing Repo"
 
+  # Build flag string to pass through to ctf-sync
+  local SYNC_FLAGS=""
+  $FORCE_PROD && SYNC_FLAGS="--prod"
+
   if command -v ctf-sync &>/dev/null; then
-    ctf-sync
+    ctf-sync $SYNC_FLAGS
   elif [[ -f "$SETUP_DIR/ctf-sync.sh" ]]; then
-    zsh "$SETUP_DIR/ctf-sync.sh"
+    zsh "$SETUP_DIR/ctf-sync.sh" $SYNC_FLAGS
   else
     print_warn "ctf-sync not available — skipping."
     print_info "It will be available after this install completes."
@@ -524,20 +493,11 @@ run_sync() {
 # =============================================================================
 # ENTRY POINT
 # =============================================================================
-case "$1" in
-  --help|-h)
-    show_help
-    exit 0
-    ;;
-  --check)
-    echo ""
-    echo "${BOLD}${CYAN}=== CTF Dependency Check ===${RESET}"
-    run_dependency_check "--check-only"
-    exit 0
-    ;;
-esac
 
-# --- Confirmation prompt ------------------------------------------------------
+# --check is handled inside run_dependency_check via the CHECK_ONLY flag.
+# --help and path resolution are handled above. We jump straight to the
+# confirmation prompt here.
+
 echo ""
 echo "${BOLD}${CYAN}=== CTF Toolkit Installer ===${RESET}"
 echo ""
@@ -546,6 +506,19 @@ echo "  ${DIM}Repo:    ${REPO_DIR}${RESET}"
 echo "  ${DIM}CTF dir: ${CTF_BASE}${RESET}"
 echo "  ${DIM}Env:     ${CTF_ENV_FILE}${RESET}"
 echo "  ${DIM}Shell:   ${ZSHRC}${RESET}"
+
+# TEACHING NOTE — Surface the active mode clearly in the confirmation prompt.
+# Same pattern as ctf-sync: when --prod is active, say so explicitly so the
+# user can confirm they're targeting the right install before any changes
+# are made. The prompt is the last chance to abort before writes happen.
+if $FORCE_PROD; then
+  echo "  ${YELLOW}Mode:    production (--prod)${RESET}"
+elif [[ "$REPO_DIR" == "$HOME"* ]]; then
+  echo "  ${DIM}Mode:    dev (auto-detected)${RESET}"
+else
+  echo "  ${DIM}Mode:    production (auto-detected)${RESET}"
+fi
+
 echo ""
 echo -n "${YELLOW}  Continue? [y/N]:${RESET} "
 read confirm
@@ -580,8 +553,10 @@ echo "  ${BOLD}ctf-status${RESET}"
 echo ""
 echo "  ${CYAN}Available commands:${RESET}"
 echo "  ${BOLD}ctf-install${RESET}              Re-run this installer"
+echo "  ${BOLD}ctf-install --prod${RESET}       Re-run targeting production install"
 echo "  ${BOLD}ctf-install --check${RESET}      Dependency check only"
 echo "  ${BOLD}ctf-sync${RESET}                 Pull latest repo changes"
+echo "  ${BOLD}ctf-sync --prod${RESET}          Pull latest changes for production"
 echo "  ${BOLD}ctf-help${RESET}                 List all session commands"
 echo ""
 echo "  ${DIM}Repo:    ${REPO_DIR}${RESET}"
