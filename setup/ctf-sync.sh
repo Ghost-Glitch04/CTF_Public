@@ -38,55 +38,60 @@ RESET='\033[0m'
 # =============================================================================
 # INSTALL DIR RESOLUTION
 # =============================================================================
-# TEACHING NOTE — Layered fallback for path resolution.
-# We resolve INSTALL_DIR in three passes, in order of precedence:
+# TEACHING NOTE — Inline if/elif/else replaces the previous _resolve_install_dir
+# function. (Refactor #6)
 #
-#   1. CTF_REPO_DIR already set in the environment (user or prior session set it)
-#   2. Auto-detect: ~/github/CTF_Public already exists on disk (dev machine)
-#   3. No repo found anywhere → prompt the user on first run so the clone
-#      lands in the correct place rather than silently defaulting to /opt/
+# The original version wrapped this logic in a function called exactly once,
+# immediately after its definition. A function is the right tool when you need
+# to reuse logic in multiple places, or when the logic is complex enough to
+# deserve its own name and scope. Neither was true here — it ran once, and the
+# logic is a simple layered fallback that reads naturally top-to-bottom.
 #
-# The prompt only fires during a fresh clone (no existing repo). On re-runs
-# (repo already present), detection finds it and skips the prompt entirely.
+# Using a plain if/elif/else block instead has two advantages:
+#   1. Consistency — ctf-install.sh solves the same problem the same way,
+#      making the codebase easier to read as a whole.
+#   2. Cleanliness — functions defined in a script persist for the lifetime
+#      of that script's execution. _resolve_install_dir served no purpose
+#      after being called and left an unused name in the namespace.
+#
+# The logic itself is unchanged — same four passes, same prompt fallback.
+# Only the structure changed.
+#
+# Pass 1: CTF_REPO_DIR already set in the environment (user or prior session)
+# Pass 2: Auto-detect ~/github/CTF_Public on disk (known dev path)
+# Pass 3: Auto-detect /opt/CTF_Public on disk (production path)
+# Pass 4: Nothing found — prompt once so the clone lands in the right place
+#
+# The prompt only fires on a brand new machine with no repo anywhere on disk.
+# On all subsequent runs, one of the first three passes will match.
 # =============================================================================
 
-_resolve_install_dir() {
-  # Pass 1: respect an already-exported CTF_REPO_DIR
-  if [[ -n "$CTF_REPO_DIR" ]]; then
-    echo "$CTF_REPO_DIR"
-    return
-  fi
-
-  # Pass 2: auto-detect known dev path
-  if [[ -d "$HOME/github/CTF_Public" ]]; then
-    echo "$HOME/github/CTF_Public"
-    return
-  fi
-
-  # Pass 3: auto-detect production path
-  if [[ -d "/opt/CTF_Public" ]]; then
-    echo "/opt/CTF_Public"
-    return
-  fi
-
-  # Pass 4: nothing found — prompt on first run
-  # TEACHING NOTE — We only reach here when no repo exists anywhere on disk.
-  # Rather than silently cloning to /opt/ on a dev machine, we ask once.
-  # The default shown in brackets is the production path; a dev just types
-  # their preferred path instead. Empty input accepts the default.
+if [[ -n "$CTF_REPO_DIR" ]]; then
+  INSTALL_DIR="$CTF_REPO_DIR"
+elif [[ -d "$HOME/github/CTF_Public" ]]; then
+  INSTALL_DIR="$HOME/github/CTF_Public"
+elif [[ -d "/opt/CTF_Public" ]]; then
+  INSTALL_DIR="/opt/CTF_Public"
+else
+  # TEACHING NOTE — Prompting as a last resort, not a first resort.
+  # We only reach this branch when no repo exists anywhere on disk. Rather
+  # than silently defaulting to /opt/ on a dev machine, we ask once.
+  # Empty input accepts the production default via the :- fallback operator.
+  #
+  # Tilde expansion: the `read` builtin stores input as a literal string —
+  # it does NOT expand shell metacharacters like ~. If a user types
+  # ~/github/CTF_Public, the variable holds the literal characters "~/"
+  # rather than "/home/username/". The ${var/#\~/$HOME} substitution fixes
+  # this by replacing a leading ~ with the expanded value of $HOME.
   echo ""
-  echo "${CYAN}[SETUP]${RESET}  No existing repo found. Where should it be cloned?" >&2
-  echo "         ${DIM}Production default: /opt/CTF_Public${RESET}" >&2
-  echo "         ${DIM}Dev example:        ~/github/CTF_Public${RESET}" >&2
-  echo -n "         Install path [/opt/CTF_Public]: " >&2
+  echo "${CYAN}[SETUP]${RESET}  No existing repo found. Where should it be cloned?"
+  echo "         ${DIM}Production default: /opt/CTF_Public${RESET}"
+  echo "         ${DIM}Dev example:        ~/github/CTF_Public${RESET}"
+  echo -n "         Install path [/opt/CTF_Public]: "
   read custom_dir
-
-  # Expand ~ manually since read doesn't expand it
   custom_dir="${custom_dir/#\~/$HOME}"
-  echo "${custom_dir:-/opt/CTF_Public}"
-}
-
-INSTALL_DIR="$(_resolve_install_dir)"
+  INSTALL_DIR="${custom_dir:-/opt/CTF_Public}"
+fi
 
 # --- Help ---------------------------------------------------------------------
 if [[ "$1" == "--help" || "$1" == "-h" ]]; then
@@ -143,8 +148,6 @@ if [[ -d "${INSTALL_DIR}/.git" ]]; then
   if echo "$PULL_OUTPUT" | grep -q "Already up to date"; then
     echo "${GREEN}[OK]${RESET}    Already up to date — no changes pulled."
   else
-    # Show a summary of what changed
-    CHANGED_FILES=$(echo "$PULL_OUTPUT" | grep -E "^\s+[A-Za-z]" | wc -l | tr -d ' ')
     echo "${GREEN}[OK]${RESET}    Pull successful."
     echo ""
     echo "${DIM}  Changed files:${RESET}"
@@ -173,7 +176,6 @@ else
   if [[ "$INSTALL_DIR" == /opt/* ]]; then
     sudo git clone "$REPO_URL" "$INSTALL_DIR" 2>&1
   else
-    # Ensure parent directory exists for dev paths
     mkdir -p "$(dirname "$INSTALL_DIR")"
     git clone "$REPO_URL" "$INSTALL_DIR" 2>&1
   fi
@@ -195,7 +197,6 @@ fi
 echo ""
 echo "${CYAN}[PERMS]${RESET} Setting ownership to: ${BOLD}${REPO_OWNER}${RESET}"
 
-# Use sudo only when the path requires elevated permissions
 if [[ "$INSTALL_DIR" == /opt/* ]]; then
   sudo chown -R "${REPO_OWNER}":"${REPO_OWNER}" "$INSTALL_DIR"
 else
@@ -229,7 +230,24 @@ echo "  ${CYAN}Location:${RESET}  $INSTALL_DIR"
 echo "  ${CYAN}Owner:${RESET}     $REPO_OWNER"
 echo "  ${CYAN}Scripts:${RESET}   $TOTAL executable"
 echo ""
+
+# TEACHING NOTE — Conditional sudo in the symlink tip. (Refactor #8)
+#
+# The previous version always printed `sudo ln -sf ...` regardless of where
+# INSTALL_DIR resolved to. On a dev machine where INSTALL_DIR is under $HOME,
+# sudo is unnecessary — you own the file and /usr/local/bin is writable by
+# your user if sudo was used to create the symlink originally. Printing sudo
+# unconditionally implies elevated privileges are always required, which is
+# misleading and trains a habit of reaching for sudo when it isn't needed.
+#
+# The fix: check whether INSTALL_DIR is a system path (/opt/*) or a user
+# path. Show sudo only when the path genuinely requires it. The produced tip
+# is now accurate on both dev and production machines.
 echo "  ${DIM}Tip: Add this to your toolkit:${RESET}"
-echo "  ${BOLD}sudo ln -sf ${INSTALL_DIR}/setup/ctf-sync.sh /usr/local/bin/ctf-sync${RESET}"
+if [[ "$INSTALL_DIR" == /opt/* ]]; then
+  echo "  ${BOLD}sudo ln -sf ${INSTALL_DIR}/setup/ctf-sync.sh /usr/local/bin/ctf-sync${RESET}"
+else
+  echo "  ${BOLD}ln -sf ${INSTALL_DIR}/setup/ctf-sync.sh /usr/local/bin/ctf-sync${RESET}"
+fi
 echo "  ${DIM}Then run ${BOLD}ctf-sync${RESET}${DIM} from anywhere to stay up to date.${RESET}"
 echo ""
