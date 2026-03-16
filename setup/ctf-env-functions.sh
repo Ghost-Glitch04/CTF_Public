@@ -10,7 +10,7 @@
 #
 # COMMANDS:
 #   set-platform <code>    — Set active CTF platform (HTB, THM, etc.)
-#   set-box      <name>    — Set active box and create workspace
+#   set-box      <n>       — Set active box and create workspace
 #   set-address  <ip>      — Set target IP address
 #   ctf-status             — Display current session state
 #   ctf-clear              — Clear all session variables
@@ -52,8 +52,40 @@
 # Variables in ALL_CAPS are a convention meaning "treat this as a constant".
 # =============================================================================
 
+# =============================================================================
+# REPO DIR RESOLUTION
+# =============================================================================
+# TEACHING NOTE — This block runs every time a terminal session starts (because
+# this file is sourced by ~/.zshrc). It resolves and exports CTF_REPO_DIR so
+# all other scripts that read it get a consistent value.
+#
+# The three-pass check mirrors the logic in ctf-sync.sh and ctf-install.sh.
+# Keeping the same detection order across all three files means they all agree
+# on which directory is authoritative, regardless of which one runs first.
+#
+# We don't prompt here (unlike ctf-sync.sh) because this file is sourced
+# non-interactively on terminal open. Prompting at shell startup would be
+# disruptive. Instead we fall back to the production path silently — by the
+# time a dev has run ctf-sync.sh once, the repo exists and auto-detection
+# finds it without needing a prompt.
+# =============================================================================
+
+if [[ -z "$CTF_REPO_DIR" ]]; then
+  if [[ -d "$HOME/github/CTF_Public" ]]; then
+    export CTF_REPO_DIR="$HOME/github/CTF_Public"
+  elif [[ -d "/opt/CTF_Public" ]]; then
+    export CTF_REPO_DIR="/opt/CTF_Public"
+  else
+    export CTF_REPO_DIR="/opt/CTF_Public"   # default before first sync
+  fi
+fi
+
 # Base directory where all CTF workspaces live
-CTF_BASE="/opt/CTF"
+# TEACHING NOTE — CTF_BASE_DIR follows the same override pattern as CTF_REPO_DIR.
+# On a dev machine you might want workspaces under ~/CTF rather than /opt/CTF.
+# Export CTF_BASE_DIR before sourcing this file (or set it in your .zshrc above
+# the source line) to redirect all workspace creation automatically.
+CTF_BASE="${CTF_BASE_DIR:-/opt/CTF}"
 
 # Sub-directories created for every new box workspace
 # To add a new folder to every box: append to this array
@@ -367,7 +399,7 @@ set-platform() {
 
 
 # =============================================================================
-# set-box <name>
+# set-box <n>
 # =============================================================================
 # TEACHING NOTE — Sanitizing user input for filesystem use.
 # Box names become directory names. You can't have spaces or special chars in
@@ -486,8 +518,17 @@ ctf-status() {
   local address_display="${ADDRESS:-${_CTF_DIM}not set${_CTF_RESET}}"
   local dir_display="${BOX_DIR:-${_CTF_DIM}not set${_CTF_RESET}}"
 
+  # Show which environment is active
+  local env_label
+  if [[ "$CTF_REPO_DIR" == "$HOME/github/CTF_Public" ]]; then
+    env_label="${_CTF_YELLOW}dev${_CTF_RESET}  ${_CTF_DIM}(${CTF_REPO_DIR})${_CTF_RESET}"
+  else
+    env_label="${_CTF_GREEN}prod${_CTF_RESET} ${_CTF_DIM}(${CTF_REPO_DIR})${_CTF_RESET}"
+  fi
+
   echo ""
   echo "${_CTF_BOLD}${_CTF_CYAN}╔══ CTF Session Status ══════════════════════╗${_CTF_RESET}"
+  echo "${_CTF_BOLD}${_CTF_CYAN}║${_CTF_RESET}  Env        : ${env_label}"
   echo "${_CTF_BOLD}${_CTF_CYAN}║${_CTF_RESET}  Platform   : ${platform_display}"
   echo "${_CTF_BOLD}${_CTF_CYAN}║${_CTF_RESET}  Box        : ${box_display}"
   echo "${_CTF_BOLD}${_CTF_CYAN}║${_CTF_RESET}  Address    : ${address_display}"
@@ -534,7 +575,7 @@ ctf-help() {
   echo ""
   echo "${_CTF_CYAN}Session Setup:${_CTF_RESET}"
   echo "  ${_CTF_BOLD}set-platform <code>${_CTF_RESET}    Set active platform (e.g. HTB, THM)"
-  echo "  ${_CTF_BOLD}set-box <name>${_CTF_RESET}         Set active box and create workspace"
+  echo "  ${_CTF_BOLD}set-box <n>${_CTF_RESET}         Set active box and create workspace"
   echo "  ${_CTF_BOLD}set-address <ip>${_CTF_RESET}       Set target IP address"
   echo ""
   echo "${_CTF_CYAN}Session Info:${_CTF_RESET}"
@@ -562,5 +603,11 @@ ctf-help() {
   # Show workspace folders
   echo "${_CTF_CYAN}Box Workspace Folders:${_CTF_RESET}"
   echo "  ${_CTF_DIM}${_CTF_BOX_DIRS[*]}${_CTF_RESET}"
+  echo ""
+
+  # Show active environment
+  echo "${_CTF_CYAN}Active Environment:${_CTF_RESET}"
+  echo "  ${_CTF_BOLD}CTF_REPO_DIR${_CTF_RESET}  ${_CTF_DIM}${CTF_REPO_DIR}${_CTF_RESET}"
+  echo "  ${_CTF_BOLD}CTF_BASE${_CTF_RESET}      ${_CTF_DIM}${CTF_BASE}${_CTF_RESET}"
   echo ""
 }
