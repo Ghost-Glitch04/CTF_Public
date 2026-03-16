@@ -70,15 +70,14 @@
 # =============================================================================
 # TEACHING NOTE — Parse flags before resolving any paths.
 #
-# This mirrors the same pattern used in ctf-sync.sh. Flags must be read
-# first because FORCE_PROD directly controls which path gets resolved.
-# Parsing after resolution would mean the flag arrives too late to matter.
+# Flags must be read first because FORCE_PROD directly controls which path
+# gets resolved. Parsing after resolution would mean the flag arrives too
+# late to matter.
 #
-# --prod and --check are not mutually exclusive here — you could run
-# `ctf-install --check --prod` to do a dependency check while also
-# confirming that the production path resolution logic would be used.
-# In practice --check exits early so --prod has no visible effect in that
-# combination, but accepting both together avoids a confusing error.
+# --prod and --check are not mutually exclusive — `ctf-install --check --prod`
+# runs the dependency check while using production path resolution. In
+# practice --check exits early so --prod has no visible effect in that
+# combination, but accepting both avoids a confusing error.
 #
 # Unknown arguments exit with a clear error rather than being silently
 # ignored. Silent ignoring of unknown flags is a common source of
@@ -95,8 +94,22 @@ for arg in "$@"; do
     --check)   CHECK_ONLY=true ;;
     --help|-h) SHOW_HELP=true ;;
     *)
+      # TEACHING NOTE — Fixed typo in error message. (Bug fix #1)
+      #
+      # The previous version read:
+      #   echo "  Run ${arg} ctf-install --help for usage."
+      #
+      # The ${arg} variable was left in the wrong position after editing —
+      # likely a copy-paste artifact. The result was that running
+      # `ctf-install --typo` would print:
+      #   "Run --typo ctf-install --help for usage."
+      #
+      # This is a low-severity bug (the user still sees the unknown arg in
+      # the line above), but misleading error messages erode trust in a
+      # tool. A good error message tells you exactly what went wrong and
+      # exactly what to do next — no extra noise.
       echo "\033[0;31m[ERROR]\033[0m Unknown argument: ${arg}"
-      echo "  Run ${arg} ctf-install --help for usage."
+      echo "  Run ctf-install --help for usage."
       exit 1
       ;;
   esac
@@ -105,7 +118,7 @@ done
 # =============================================================================
 # SECTION 2 — PATH RESOLUTION
 # =============================================================================
-# TEACHING NOTE — --prod short-circuits auto-detection. (New behaviour)
+# TEACHING NOTE — --prod short-circuits auto-detection.
 #
 # The detection chain is identical to ctf-sync.sh. Keeping the same logic
 # in both files means they always agree on which directory is authoritative.
@@ -461,21 +474,16 @@ run_symlinks() {
 #
 # When ctf-install is run with --prod, Step 7 must pass that flag along to
 # ctf-sync. If it didn't, ctf-sync would run its own auto-detection and
-# potentially target the dev path instead of the production path the user
-# explicitly asked for — silently undoing the intent of --prod.
+# potentially target the dev path instead — silently undoing the intent of
+# --prod. SYNC_FLAGS is empty when --prod is not set, so the call is
+# identical to the previous behaviour in that case.
 #
-# We store the flag in a variable (SYNC_FLAGS) so the logic stays in one
-# place and is easy to extend if more flags are added in future. The
-# variable is empty when --prod is not set, so the ctf-sync call is
-# identical to the old behaviour in that case.
-#
-# The fallback also uses zsh (not bash) because ctf-sync.sh uses
-# zsh-specific syntax. See the earlier bug fix note for details.
+# The fallback uses zsh (not bash) because ctf-sync.sh uses zsh-specific
+# syntax and has a #!/bin/zsh shebang.
 # =============================================================================
 run_sync() {
   print_step "Syncing Repo"
 
-  # Build flag string to pass through to ctf-sync
   local SYNC_FLAGS=""
   $FORCE_PROD && SYNC_FLAGS="--prod"
 
@@ -494,10 +502,6 @@ run_sync() {
 # ENTRY POINT
 # =============================================================================
 
-# --check is handled inside run_dependency_check via the CHECK_ONLY flag.
-# --help and path resolution are handled above. We jump straight to the
-# confirmation prompt here.
-
 echo ""
 echo "${BOLD}${CYAN}=== CTF Toolkit Installer ===${RESET}"
 echo ""
@@ -507,10 +511,8 @@ echo "  ${DIM}CTF dir: ${CTF_BASE}${RESET}"
 echo "  ${DIM}Env:     ${CTF_ENV_FILE}${RESET}"
 echo "  ${DIM}Shell:   ${ZSHRC}${RESET}"
 
-# TEACHING NOTE — Surface the active mode clearly in the confirmation prompt.
-# Same pattern as ctf-sync: when --prod is active, say so explicitly so the
-# user can confirm they're targeting the right install before any changes
-# are made. The prompt is the last chance to abort before writes happen.
+# Surface the active mode clearly so the user can confirm the right install
+# is targeted before any changes are made.
 if $FORCE_PROD; then
   echo "  ${YELLOW}Mode:    production (--prod)${RESET}"
 elif [[ "$REPO_DIR" == "$HOME"* ]]; then
