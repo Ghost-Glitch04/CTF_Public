@@ -45,21 +45,10 @@ RESET='\033[0m'
 # =============================================================================
 # TEACHING NOTE — Parse ALL flags first, before any other logic runs.
 #
-# The previous version handled --help with a separate `if [[ "$1" == ... ]]`
-# check placed after path resolution. This created a subtle bug: flag
-# combinations like `ctf-sync --prod --help` would silently skip the help
-# output and proceed to sync, because $1 was "--prod", not "--help".
-# (Bug fix #2)
-#
-# The fix moves ALL flag handling into the argument parsing loop, using
-# boolean variables (FORCE_PROD, SHOW_HELP) that are then acted on at
-# the appropriate point later in the script. This is the same pattern
-# ctf-install.sh already used correctly — now both scripts are consistent.
-#
-# The rule to remember: flags should be parsed once, early, into named
-# booleans. Never check $1/$2 directly later in the script — by the time
-# you need the information, positional variables may have shifted or the
-# check may be reachable via multiple code paths with different $1 values.
+# All flags are parsed into boolean variables in a single loop so that flag
+# order doesn't matter. `ctf-sync --prod --help` and `ctf-sync --help --prod`
+# both show help and exit. Checking $1 directly later in the script would
+# break for any combination where --help isn't first.
 # =============================================================================
 
 FORCE_PROD=false
@@ -88,14 +77,8 @@ done
 #   Pass 3: /opt/CTF_Public exists on disk (production path)
 #   Pass 4: nothing found — prompt once on first run
 #
-# This ordering means the dev path always wins when both installs exist,
-# which is the right default for a machine primarily used for development.
-# On a dual-install machine (e.g. a Kali VM), --prod provides an explicit
-# signal to bypass detection and target production directly.
-#
-# The existence check after FORCE_PROD assignment ensures that --prod
-# fails loudly if production was never installed, rather than creating
-# a new unexpected directory or proceeding with a broken path.
+# --prod bypasses all passes and assigns /opt/CTF_Public directly, with an
+# immediate existence check so a missing production install fails loudly.
 # =============================================================================
 
 if $FORCE_PROD; then
@@ -117,12 +100,10 @@ elif [[ -d "/opt/CTF_Public" ]]; then
 else
   # TEACHING NOTE — Prompting as a last resort, not a first resort.
   # We only reach this branch when no repo exists anywhere on disk and
-  # --prod was not passed. Rather than silently defaulting to /opt/ on a
-  # dev machine, we ask once. Empty input accepts the production default.
+  # --prod was not passed. Empty input accepts the production default.
   #
-  # Tilde expansion: the `read` builtin stores input as a literal string —
-  # it does NOT expand shell metacharacters like ~. The ${var/#\~/$HOME}
-  # substitution replaces a leading ~ with the expanded value of $HOME.
+  # Tilde expansion: the `read` builtin stores input as a literal string.
+  # The ${var/#\~/$HOME} substitution replaces a leading ~ with $HOME.
   echo ""
   echo "${CYAN}[SETUP]${RESET}  No existing repo found. Where should it be cloned?"
   echo "         ${DIM}Production default: /opt/CTF_Public${RESET}"
@@ -134,11 +115,6 @@ else
 fi
 
 # --- Help ---------------------------------------------------------------------
-# TEACHING NOTE — Help is now gated on SHOW_HELP, not on $1.
-# Because all flags were parsed into booleans above, we can check SHOW_HELP
-# here regardless of what order the flags were passed in. This correctly
-# handles `ctf-sync --prod --help`, `ctf-sync --help --prod`, and
-# `ctf-sync --help` all the same way — show help and exit.
 if $SHOW_HELP; then
   echo ""
   echo "${BOLD}ctf-sync.sh${RESET} — CTF Repo CTF Sync"
@@ -171,10 +147,6 @@ echo "${BOLD}${CYAN}=== CTF Repo CTF Sync ===${RESET}"
 echo "${DIM}  Repo:   $REPO_URL${RESET}"
 echo "${DIM}  Target: $INSTALL_DIR${RESET}"
 
-# TEACHING NOTE — Surface the active mode clearly in the header.
-# When --prod is passed, print a visible label so there's no ambiguity
-# about which install is being targeted. This is especially important on
-# a dual-install machine where the wrong target could cause real confusion.
 if $FORCE_PROD; then
   echo "${YELLOW}  Mode:   production (--prod)${RESET}"
 elif [[ "$INSTALL_DIR" == "$HOME"* ]]; then
@@ -192,6 +164,33 @@ if [[ -d "${INSTALL_DIR}/.git" ]]; then
 
   cd "$INSTALL_DIR" || { echo "${RED}[ERROR]${RESET} Cannot cd into $INSTALL_DIR"; exit 1; }
 
+  # ==========================================================================
+  # TEACHING NOTE — Applying core.fileMode false before pulling. (New)
+  #
+  # Every time ctf-install.sh or ctf-sync.sh runs chmod +x on the scripts
+  # in setup/, git records the execute bit change as a local modification.
+  # From git's perspective the file has been edited, even though the content
+  # is identical to what's in the remote. This causes `git pull` to fail
+  # with "Your local changes would be overwritten" on every subsequent sync,
+  # forcing a manual `git checkout` on each affected file before pulling.
+  #
+  # `git config core.fileMode false` tells git to stop tracking execute bit
+  # changes entirely for this repository. Once set, chmod +x no longer makes
+  # files appear modified, and pulls proceed cleanly regardless of what
+  # permission changes have been applied locally.
+  #
+  # We apply it here — before the pull — so that any permission-related dirt
+  # in the working tree is immediately invisible to git, allowing the pull to
+  # succeed without manual intervention. Running it on every sync is harmless:
+  # setting a git config value that is already set is a no-op. This also means
+  # existing installations that were set up without this config get fixed
+  # automatically the next time ctf-sync runs, with no manual steps required.
+  # ==========================================================================
+  echo "${CYAN}[CONFIG]${RESET} Setting core.fileMode false..."
+  git config core.fileMode false
+  echo "${GREEN}[OK]${RESET}    Permission changes will not be tracked by git."
+  echo ""
+
   CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
   echo "${DIM}  Branch: $CURRENT_BRANCH${RESET}"
 
@@ -207,21 +206,6 @@ if [[ -d "${INSTALL_DIR}/.git" ]]; then
   if echo "$PULL_OUTPUT" | grep -q "Already up to date"; then
     echo "${GREEN}[OK]${RESET}    Already up to date — no changes pulled."
   else
-    # TEACHING NOTE — Removed unused CHANGED_FILES variable. (Refactor #5)
-    #
-    # The previous version computed:
-    #   CHANGED_FILES=$(echo "$PULL_OUTPUT" | grep -E ... | wc -l | tr -d ' ')
-    #
-    # This ran a three-stage subshell pipeline (grep → wc → tr) and stored
-    # the result in CHANGED_FILES — but then never used that variable anywhere.
-    # The file list was printed directly from $PULL_OUTPUT on the very next
-    # line, making CHANGED_FILES pure dead code.
-    #
-    # Removing it is a small but meaningful improvement: the pipeline had real
-    # cost (three forked processes), and a reader seeing CHANGED_FILES would
-    # naturally search for where it's used, finding nothing. Dead code that
-    # looks like it might matter is more confusing than dead code that's
-    # obviously unused.
     echo "${GREEN}[OK]${RESET}    Pull successful."
     echo ""
     echo "${DIM}  Changed files:${RESET}"
@@ -264,6 +248,31 @@ else
 
   echo ""
   echo "${GREEN}[OK]${RESET}    Repo cloned to: ${BOLD}$INSTALL_DIR${RESET}"
+
+  # ==========================================================================
+  # TEACHING NOTE — Applying core.fileMode false after a fresh clone. (New)
+  #
+  # A fresh clone starts with a clean working tree, so there are no dirty
+  # files to worry about yet. However ctf-install.sh (which runs next) will
+  # immediately call chmod +x on every script in setup/. Without this config,
+  # those permission changes would be recorded as local modifications, and
+  # the very first `ctf-sync` after install would fail.
+  #
+  # Setting it immediately after clone means the repo is correctly configured
+  # before any other tooling touches it. The sequence is:
+  #   1. Clone               — clean working tree
+  #   2. core.fileMode false — git stops watching execute bits
+  #   3. ctf-install chmod   — permissions change, but git doesn't notice
+  #   4. ctf-sync pull       — succeeds cleanly every time
+  #
+  # Using `git -C "$INSTALL_DIR"` runs the git command inside the repo
+  # directory without requiring a `cd` first. This keeps the script's working
+  # directory unchanged and avoids any side effects from directory switching.
+  # ==========================================================================
+  echo ""
+  echo "${CYAN}[CONFIG]${RESET} Setting core.fileMode false..."
+  git -C "$INSTALL_DIR" config core.fileMode false
+  echo "${GREEN}[OK]${RESET}    Permission changes will not be tracked by git."
 fi
 
 # --- Step 2: Fix ownership ----------------------------------------------------
