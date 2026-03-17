@@ -1,0 +1,56 @@
+# =============================================================================
+# .gitattributes — Line Ending Policy for CTF_Public
+# =============================================================================
+# ABOUT:
+#   This file tells git how to handle line endings for every file in the repo.
+#   It prevents Windows CRLF line endings from entering the repo regardless of
+#   what platform a contributor is editing from.
+#
+# WHY THIS MATTERS:
+#   Shell scripts with CRLF line endings fail on Linux/macOS. The \r character
+#   is invisible in most editors but the shell sees it — it becomes part of
+#   variable values and heredoc terminators, causing silent misbehaviour.
+#   A .gitattributes file is the single most reliable way to enforce LF across
+#   all contributors without requiring them to configure git manually.
+#
+# HOW IT WORKS:
+#   `text=auto` — git normalises line endings for all text files automatically.
+#                 Files are stored as LF in the repo regardless of the platform.
+#   `eol=lf`    — on checkout, git writes the file with LF endings even on
+#                 Windows, rather than converting to CRLF.
+#
+# RESULT:
+#   - Files in the repo always have LF endings (stored correctly)
+#   - Files on disk after checkout always have LF endings (executed correctly)
+#   - No manual `dos2unix` needed after cloning or pulling
+#
+# APPLYING TO AN EXISTING REPO:
+#   After adding this file, run:
+#     git add .gitattributes
+#     git rm --cached -r .
+#     git reset --hard
+#   This re-normalises all tracked files using the new rules.
+# =============================================================================
+
+# --- Default: normalise all text files to LF ----------------------------------
+* text=auto eol=lf
+
+# --- Shell scripts: explicitly enforce LF -------------------------------------
+# These are the files most at risk from CRLF causing runtime failures.
+*.sh text eol=lf
+
+# --- Markdown and config files: enforce LF ------------------------------------
+*.md   text eol=lf
+*.txt  text eol=lf
+*.env  text eol=lf
+
+# --- Binary files: no line ending conversion ----------------------------------
+# Tell git these are binary so it never attempts conversion.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.zip  binary
+*.tar  binary
+*.gz   binary
