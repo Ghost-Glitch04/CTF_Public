@@ -67,6 +67,59 @@ for arg in "$@"; do
 done
 
 # =============================================================================
+# EARLY HELP EXIT — before path resolution
+# =============================================================================
+# TEACHING NOTE — Check SHOW_HELP immediately after argument parsing, before
+# any path resolution runs. (Bug fix #2)
+#
+# The previous version placed the help check after the full path resolution
+# block. This meant that on a machine with no repo anywhere on disk, running
+# `ctf-sync --help` would fall through to the Pass 4 prompt and ask the user
+# where to clone the repo — before they had even seen the help text.
+#
+# The fix moves the help check here, right after we know what flags were
+# passed and before we touch the filesystem. If --help was requested, we
+# print the static help text and exit immediately. Path resolution is
+# irrelevant for a help request, so there is no reason to run it first.
+#
+# Note: the help block below still prints the resolved INSTALL_DIR in the
+# target line. Since we exit before resolution, we show the production
+# default (/opt/CTF_Public) as a representative value. This is acceptable —
+# the help output documents how the tool works, not the current machine state.
+# =============================================================================
+if $SHOW_HELP; then
+  echo ""
+  echo "${BOLD}ctf-sync.sh${RESET} — CTF Repo CTF Sync"
+  echo ""
+  echo "  Pulls latest changes if repo exists, clones fresh if it doesn't."
+  echo "  Then fixes ownership and makes all .sh scripts executable."
+  echo ""
+  echo "  ${CYAN}Repo:${RESET}    $REPO_URL"
+  echo "  ${CYAN}Target:${RESET}  auto-detected (see detection order below)"
+  echo ""
+  echo "  ${BOLD}Usage:${RESET}"
+  echo "  ctf-sync              Auto-detect install location"
+  echo "  ctf-sync --prod       Force production path (/opt/CTF_Public)"
+  echo "  ctf-sync --help       Show this message"
+  echo ""
+  echo "  ${BOLD}Detection Order (without --prod):${RESET}"
+  echo "  1. \$CTF_REPO_DIR if already exported"
+  echo "  2. ~/github/CTF_Public if it exists"
+  echo "  3. /opt/CTF_Public if it exists"
+  echo "  4. Prompt on first run"
+  echo ""
+  echo "  ${BOLD}Dual-Install Note:${RESET}"
+  echo "  If both ~/github/CTF_Public and /opt/CTF_Public exist, the dev"
+  echo "  path is used by default. Use --prod to explicitly target prod."
+  echo ""
+  echo "  ${BOLD}Dev Override:${RESET}"
+  echo "  export CTF_REPO_DIR=~/github/CTF_Public"
+  echo "  ctf-sync"
+  echo ""
+  exit 0
+fi
+
+# =============================================================================
 # INSTALL DIR RESOLUTION
 # =============================================================================
 # TEACHING NOTE — --prod short-circuits the detection chain.
@@ -112,33 +165,6 @@ else
   read custom_dir
   custom_dir="${custom_dir/#\~/$HOME}"
   INSTALL_DIR="${custom_dir:-/opt/CTF_Public}"
-fi
-
-# --- Help ---------------------------------------------------------------------
-if $SHOW_HELP; then
-  echo ""
-  echo "${BOLD}ctf-sync.sh${RESET} — CTF Repo CTF Sync"
-  echo ""
-  echo "  Pulls latest changes if repo exists, clones fresh if it doesn't."
-  echo "  Then fixes ownership and makes all .sh scripts executable."
-  echo ""
-  echo "  ${CYAN}Repo:${RESET}    $REPO_URL"
-  echo "  ${CYAN}Target:${RESET}  $INSTALL_DIR"
-  echo ""
-  echo "  ${BOLD}Usage:${RESET}"
-  echo "  ctf-sync              Auto-detect install location"
-  echo "  ctf-sync --prod       Force production path (/opt/CTF_Public)"
-  echo "  ctf-sync --help       Show this message"
-  echo ""
-  echo "  ${BOLD}Dual-Install Note:${RESET}"
-  echo "  If both ~/github/CTF_Public and /opt/CTF_Public exist, the dev"
-  echo "  path is used by default. Use --prod to explicitly target prod."
-  echo ""
-  echo "  ${BOLD}Dev Override:${RESET}"
-  echo "  export CTF_REPO_DIR=~/github/CTF_Public"
-  echo "  ctf-sync"
-  echo ""
-  exit 0
 fi
 
 # --- Header -------------------------------------------------------------------
@@ -244,11 +270,26 @@ if [[ -d "${INSTALL_DIR}/.git" ]]; then
     # Check whether this is a "local changes would be overwritten" failure
     if echo "$PULL_OUTPUT" | grep -q "Your local changes to the following files would be overwritten"; then
 
-      # Parse the conflicting filenames from git's error output
-      local conflict_files=()
+      # Parse the conflicting filenames from git's error output.
+      # TEACHING NOTE — Robust whitespace stripping with sed. (Refactor #4)
+      #
+      # The previous version used `awk '{print $1}'` to strip leading
+      # whitespace from each indented filename line. awk splits on any
+      # whitespace, so a filename containing a space would be silently
+      # truncated to just the first word — the rest would be discarded.
+      # Shell script filenames rarely contain spaces, but "rarely" is not
+      # "never", and a parser that corrupts input silently is worse than
+      # one that fails loudly.
+      #
+      # `sed 's/^[[:space:]]*//'` removes only the leading whitespace from
+      # each line, preserving everything after it including any spaces within
+      # the filename itself. [[:space:]] is the POSIX character class for
+      # whitespace (spaces, tabs, etc.), and the * makes it match zero or
+      # more — so lines with no leading whitespace pass through unchanged.
+      conflict_files=()
       while IFS= read -r file; do
         [[ -n "$file" ]] && conflict_files+=("$file")
-      done < <(echo "$PULL_OUTPUT" | grep -E "^\s+" | awk '{print $1}')
+      done < <(echo "$PULL_OUTPUT" | grep -E "^\s+" | sed 's/^[[:space:]]*//')
 
       # Display the conflict list clearly
       echo ""
@@ -271,7 +312,22 @@ if [[ -d "${INSTALL_DIR}/.git" ]]; then
         echo "${CYAN}[RECOVER]${RESET} Resetting conflicting files to remote version..."
         echo ""
 
-        local recover_failed=false
+        # TEACHING NOTE — Plain variable, not local, at script scope. (Bug fix #1)
+        #
+        # `local` is only valid inside a function body. Using it at the top
+        # level of a script (outside any function) is undefined behaviour in
+        # zsh — it may be silently ignored, produce a warning, or behave
+        # inconsistently across zsh versions. The variable ends up as a plain
+        # global either way, but relying on undefined behaviour is fragile.
+        #
+        # The conflict recovery block lives directly in the script body, not
+        # inside a function, so `local` is wrong here. Plain variable
+        # assignment is correct. The variable is still scoped to this script's
+        # execution — it just isn't function-local, which doesn't matter since
+        # there's no function scope to be local to.
+        #
+        # The same fix applies to conflict_files above.
+        recover_failed=false
         for file in "${conflict_files[@]}"; do
           if git checkout -- "$file" 2>/dev/null; then
             echo "  ${GREEN}reset${RESET}  ${DIM}${file}${RESET}"
@@ -300,6 +356,22 @@ if [[ -d "${INSTALL_DIR}/.git" ]]; then
           echo "${YELLOW}[WARN]${RESET}  One or more files could not be reset automatically."
           echo "         Run ${BOLD}git status${RESET} inside ${BOLD}${INSTALL_DIR}${RESET} to inspect remaining issues."
         fi
+
+        # TEACHING NOTE — Skip the post-pull status check after recovery. (Bug fix #3)
+        #
+        # After a successful conflict recovery and retry, PULL_OUTPUT holds
+        # the output of the retry pull. The status check further down the
+        # script reads PULL_OUTPUT to decide whether to print "Already up to
+        # date" or "Pull successful". But we have already printed a clear
+        # success message above, so falling through to that check would print
+        # a second status line — potentially a conflicting one if the retry
+        # happened to return "Already up to date".
+        #
+        # We set PULL_OUTPUT to a known value that will satisfy the "Already
+        # up to date" branch, suppressing the second message cleanly. An
+        # alternative would be a boolean flag, but reusing PULL_OUTPUT is
+        # simpler and keeps the control flow easy to follow.
+        PULL_OUTPUT="Already up to date."
 
       else
         echo ""
