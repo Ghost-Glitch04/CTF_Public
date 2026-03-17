@@ -475,8 +475,24 @@ if [[ "$INSTALL_DIR" == /opt/* ]]; then
 else
   chown -R "${REPO_OWNER}":"${REPO_OWNER}" "$INSTALL_DIR"
 fi
+# TEACHING NOTE — Capture $? immediately after the command you care about. (Bug fix #2)
+#
+# $? holds the exit code of the last command that ran. The danger with
+# checking it inside an `if [[ $? -eq 0 ]]` block that follows an if/fi
+# construct is subtle: in zsh, `fi` does not reset $? — so checking $?
+# right after fi happens to work. However this is fragile by nature.
+# If any line is ever inserted between the fi and the $? check — even a
+# print_info call, a blank subshell evaluation, or a debug echo — $? will
+# silently reflect that new command instead of chown, and error detection
+# breaks without any visible sign.
+#
+# The safe, unambiguous pattern is to capture $? on the very next line
+# after the command you care about, assign it to a named variable, and
+# then check that variable. Named variables survive any number of
+# intervening lines and make the intent explicit to any reader.
+CHOWN_EXIT=$?
 
-if [[ $? -eq 0 ]]; then
+if [[ $CHOWN_EXIT -eq 0 ]]; then
   echo "${GREEN}[OK]${RESET}    Ownership set."
 else
   echo "${RED}[ERROR]${RESET} chown failed — try running with sudo"
@@ -487,13 +503,34 @@ fi
 echo ""
 echo "${CYAN}[CHMOD]${RESET} Making all .sh scripts executable..."
 
-find "$INSTALL_DIR" -type f -name "*.sh" | while read -r script; do
+# TEACHING NOTE — Single find pass with an internal counter. (Refactor #4)
+#
+# The previous version called `find` twice: once to iterate and chmod each
+# script, and again to count the total. Every `find` call walks the entire
+# directory tree from scratch, which is redundant when the two passes are
+# doing the same traversal back to back.
+#
+# The fix uses a counter variable (script_count) that increments inside
+# the while loop. Because we use a while loop fed by process substitution
+# < <(...) rather than a pipe, the loop body runs in the current shell —
+# NOT a subshell. This is the critical distinction:
+#
+#   find ... | while read ...   — runs in a SUBSHELL, counter is lost
+#   while read ... < <(find ...) — runs in current shell, counter persists
+#
+# Piping into while is one of the most common shell scripting mistakes
+# because it looks like it should work but silently loses any state
+# changes (variable assignments, counter increments) made inside the loop.
+# Process substitution < <(...) is the correct zsh/bash pattern when you
+# need the loop body to modify variables in the current shell.
+script_count=0
+while IFS= read -r script; do
   chmod +x "$script"
   echo "  ${GREEN}+x${RESET}  ${DIM}${script#$INSTALL_DIR/}${RESET}"
-done
+  (( script_count++ ))
+done < <(find "$INSTALL_DIR" -type f -name "*.sh")
 
-TOTAL=$(find "$INSTALL_DIR" -type f -name "*.sh" | wc -l | tr -d ' ')
-echo "${GREEN}[OK]${RESET}    ${BOLD}${TOTAL}${RESET} script(s) set to executable."
+echo "${GREEN}[OK]${RESET}    ${BOLD}${script_count}${RESET} script(s) set to executable."
 
 # --- Step 4: Summary ----------------------------------------------------------
 echo ""
@@ -501,7 +538,7 @@ echo "${BOLD}${CYAN}=== Sync Complete ===${RESET}"
 echo ""
 echo "  ${CYAN}Location:${RESET}  $INSTALL_DIR"
 echo "  ${CYAN}Owner:${RESET}     $REPO_OWNER"
-echo "  ${CYAN}Scripts:${RESET}   $TOTAL executable"
+echo "  ${CYAN}Scripts:${RESET}   $script_count executable"
 echo ""
 echo "  ${DIM}Tip: Add this to your toolkit:${RESET}"
 if [[ "$INSTALL_DIR" == /opt/* ]]; then
