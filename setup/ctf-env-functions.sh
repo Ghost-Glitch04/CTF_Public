@@ -206,6 +206,28 @@ _ctf_persist() {
   local tmp
   tmp=$(mktemp) || { _ctf_err "Could not create temp file for persist."; return 1; }
 
+  # TEACHING NOTE — Strip \r on read to handle legacy CRLF deployments. (Bug fix #1)
+  #
+  # _ctf_persist works by reading ~/.ctf_env line-by-line and rewriting the
+  # four session state variables in place. It uses a case statement to match
+  # lines like "export ADDRESS=..." and replace them with fresh values.
+  #
+  # The bug: if ~/.ctf_env was deployed when the scripts still had Windows
+  # CRLF line endings, each line in the file ends with \r. The case pattern
+  # "export ADDRESS="* does NOT match "export ADDRESS=...\r" because the \r
+  # is part of the string being matched. Every line falls through to the catch-
+  # all branch and is echoed unchanged — session state appears to save but
+  # the values are never actually updated on disk.
+  #
+  # The fix: pipe the file through sed to strip \r before the while loop sees
+  # it. This uses process substitution < <(...) rather than a pipe so that
+  # the while loop runs in the current shell — a pipe would create a subshell
+  # and any variable assignments inside the loop would be lost.
+  #
+  # This is a defensive measure. A machine that was set up after the CRLF fix
+  # will have a clean ~/.ctf_env and sed will find nothing to strip — it is a
+  # no-op in that case. Machines set up before the fix are silently healed the
+  # first time _ctf_persist runs after updating to this version.
   while IFS= read -r line; do
     case "$line" in
       "export ADDRESS="*)  echo "export ADDRESS=\"${ADDRESS}\""   ;;
@@ -214,7 +236,7 @@ _ctf_persist() {
       "export BOX_DIR="*)  echo "export BOX_DIR=\"${BOX_DIR}\""   ;;
       *)                   echo "$line"                            ;;
     esac
-  done < "$HOME/.ctf_env" > "$tmp"
+  done < <(sed 's/\r//' "$HOME/.ctf_env") > "$tmp"
 
   mv "$tmp" "$HOME/.ctf_env"
 }
