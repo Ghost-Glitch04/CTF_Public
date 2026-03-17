@@ -501,6 +501,27 @@ run_sync() {
 # =============================================================================
 # ENTRY POINT
 # =============================================================================
+# TEACHING NOTE — Function definition order in zsh scripts. (Note #5)
+#
+# All the run_* functions (run_dependency_check, run_backup, etc.) are defined
+# above this point, and called below it. This ordering is intentional and
+# important to understand.
+#
+# In zsh (and bash), a function must be defined before it is *called*, but not
+# before it is *referenced* in another function. This means:
+#
+#   ✓ run_sync can reference ctf-sync in its body even though ctf-sync is an
+#     external command resolved at call time, not at definition time.
+#   ✓ All run_* functions can safely call each other because by the time any
+#     of them execute (down here at the entry point), all are already defined.
+#   ✗ If we put the `run_dependency_check` call ABOVE its function definition,
+#     the script would fail with "command not found: run_dependency_check".
+#
+# The pattern to follow: define all functions first (top of script), call them
+# last (bottom of script). This is sometimes called "top-down readability with
+# bottom-up execution". The reader sees the high-level flow at the bottom and
+# can drill into the details of each function above it.
+# =============================================================================
 
 echo ""
 echo "${BOLD}${CYAN}=== CTF Toolkit Installer ===${RESET}"
