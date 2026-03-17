@@ -480,12 +480,36 @@ set-box() {
   export BOX_DIR="${CTF_BASE}/${PLATFORM}/${BOXNAME}"
 
   if [[ ! -d "$BOX_DIR" ]]; then
-    # Create each subdirectory defined in _CTF_BOX_DIRS
+    # TEACHING NOTE — Conditional sudo for workspace creation. (Bug fix #6)
+    #
+    # set-platform was previously fixed to use sudo when creating platform
+    # directories under /opt/. The same problem existed here in set-box:
+    # the workspace subdirectories (scans, exploits, notes, flags, loot) were
+    # always created with plain mkdir, which silently fails with a permission
+    # error on a production machine where CTF_BASE is /opt/CTF.
+    #
+    # The fix mirrors the pattern used in set-platform and ctf-install.sh:
+    # check once whether CTF_BASE is under /opt/, then apply sudo to every
+    # mkdir call in this block consistently. We check CTF_BASE (the root) not
+    # BOX_DIR (the specific path) because the ownership of the parent directory
+    # is what determines whether sudo is needed — if /opt/CTF exists and is
+    # owned by root, all paths underneath it require elevated permissions too.
+    #
+    # Using a local flag (use_sudo) rather than repeating the /opt/* check in
+    # every mkdir call keeps the decision in one place and makes the logic
+    # easy to follow at a glance.
+    local use_sudo=false
+    [[ "$CTF_BASE" == /opt/* ]] && use_sudo=true
+
     # TEACHING NOTE — Driving behavior from config arrays.
     # Adding a new workspace folder is one line in _CTF_BOX_DIRS at the top.
     # The loop here doesn't need to change. Data drives behavior.
     for subdir in "${_CTF_BOX_DIRS[@]}"; do
-      mkdir -p "${BOX_DIR}/${subdir}"
+      if $use_sudo; then
+        sudo mkdir -p "${BOX_DIR}/${subdir}"
+      else
+        mkdir -p "${BOX_DIR}/${subdir}"
+      fi
     done
 
     _ctf_ok "Created workspace: ${_CTF_BOLD}${BOX_DIR}${_CTF_RESET}"
