@@ -198,9 +198,128 @@ if [[ -d "${INSTALL_DIR}/.git" ]]; then
   PULL_EXIT=$?
 
   if [[ $PULL_EXIT -ne 0 ]]; then
-    echo "${RED}[ERROR]${RESET} Git pull failed:"
-    echo "$PULL_OUTPUT"
-    exit 1
+    # ==========================================================================
+    # TEACHING NOTE — Graceful conflict recovery. (New)
+    #
+    # When git pull fails because local files would be overwritten, it prints
+    # the conflicting filenames in a consistent format:
+    #
+    #   error: Your local changes to the following files would be overwritten:
+    #           setup/ctf-sync.sh
+    #           setup/ctf-install.sh
+    #
+    # Each filename is indented by a tab character on its own line. We parse
+    # them using grep to isolate lines that start with whitespace (the filename
+    # lines), then awk to strip the leading whitespace and print just the path.
+    # The result is a clean array of affected file paths.
+    #
+    # We check specifically for this known failure pattern before offering
+    # recovery. Any other kind of pull failure (network error, merge conflict
+    # in content, authentication problem) falls through to a plain error exit —
+    # auto-recovery only makes sense when the cause is local file conflicts.
+    #
+    # The confirmation prompt is deliberate. Overwriting local files is a
+    # destructive action. You may occasionally have an intentional local edit
+    # you want to keep, and a prompt gives you the chance to bail out and
+    # resolve it manually. The [y/N] default-no convention means hitting Enter
+    # without reading the prompt will always abort safely.
+    #
+    # If the user confirms:
+    #   1. We iterate the conflict list and run `git checkout -- <file>` on
+    #      each one individually, reporting each reset as it happens.
+    #   2. We retry the pull. If it succeeds, sync continues normally.
+    #      If it fails again (a different error emerged), we exit with the
+    #      new error output so the user has accurate diagnostic information.
+    #
+    # `git checkout -- <file>` resets a tracked file to its last committed
+    # state, discarding any local modifications. The -- separator is important:
+    # it tells git that everything after it is a filename, not a branch name.
+    # Without it, a file named like a branch could be misinterpreted.
+    #
+    # Note on scope: this recovery only handles files git is already tracking.
+    # Untracked local files (new files you created that aren't in the repo)
+    # will never appear in this conflict list and are never touched.
+    # ==========================================================================
+
+    # Check whether this is a "local changes would be overwritten" failure
+    if echo "$PULL_OUTPUT" | grep -q "Your local changes to the following files would be overwritten"; then
+
+      # Parse the conflicting filenames from git's error output
+      local conflict_files=()
+      while IFS= read -r file; do
+        [[ -n "$file" ]] && conflict_files+=("$file")
+      done < <(echo "$PULL_OUTPUT" | grep -E "^\s+" | awk '{print $1}')
+
+      # Display the conflict list clearly
+      echo ""
+      echo "${YELLOW}[WARN]${RESET}  Pull blocked — local changes conflict with remote:"
+      echo ""
+      for file in "${conflict_files[@]}"; do
+        echo "  ${YELLOW}!${RESET}  ${BOLD}${file}${RESET}"
+      done
+      echo ""
+      echo "  These local changes are likely permission-only modifications"
+      echo "  from a previous ${BOLD}chmod +x${RESET} run. Overwriting is safe in that case."
+      echo "  If you have intentional edits in these files, answer N and"
+      echo "  resolve them manually before re-running ${BOLD}ctf-sync${RESET}."
+      echo ""
+      echo -n "${YELLOW}  Overwrite all conflicting local changes with remote? [y/N]:${RESET} "
+      read recovery_confirm
+
+      if [[ "$recovery_confirm" == [yY] ]]; then
+        echo ""
+        echo "${CYAN}[RECOVER]${RESET} Resetting conflicting files to remote version..."
+        echo ""
+
+        local recover_failed=false
+        for file in "${conflict_files[@]}"; do
+          if git checkout -- "$file" 2>/dev/null; then
+            echo "  ${GREEN}reset${RESET}  ${DIM}${file}${RESET}"
+          else
+            echo "  ${RED}fail${RESET}   ${BOLD}${file}${RESET} — could not reset, skipping"
+            recover_failed=true
+          fi
+        done
+
+        echo ""
+
+        # Retry the pull now that conflicts are cleared
+        echo "${CYAN}[SYNC]${RESET}  Retrying pull..."
+        PULL_OUTPUT=$(git pull origin "$CURRENT_BRANCH" 2>&1)
+        PULL_EXIT=$?
+
+        if [[ $PULL_EXIT -ne 0 ]]; then
+          echo "${RED}[ERROR]${RESET} Pull failed again after recovery attempt:"
+          echo "$PULL_OUTPUT"
+          exit 1
+        fi
+
+        echo "${GREEN}[OK]${RESET}    Pull successful after conflict recovery."
+        if $recover_failed; then
+          echo ""
+          echo "${YELLOW}[WARN]${RESET}  One or more files could not be reset automatically."
+          echo "         Run ${BOLD}git status${RESET} inside ${BOLD}${INSTALL_DIR}${RESET} to inspect remaining issues."
+        fi
+
+      else
+        echo ""
+        echo "${DIM}  Aborted. Nothing changed.${RESET}"
+        echo ""
+        echo "  To resolve manually, run:"
+        for file in "${conflict_files[@]}"; do
+          echo "  ${BOLD}git -C ${INSTALL_DIR} checkout -- ${file}${RESET}"
+        done
+        echo "  Then re-run ${BOLD}ctf-sync${RESET}."
+        echo ""
+        exit 0
+      fi
+
+    else
+      # A different kind of pull failure — not a local conflict issue
+      echo "${RED}[ERROR]${RESET} Git pull failed:"
+      echo "$PULL_OUTPUT"
+      exit 1
+    fi
   fi
 
   if echo "$PULL_OUTPUT" | grep -q "Already up to date"; then
