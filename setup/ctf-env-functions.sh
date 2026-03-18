@@ -12,6 +12,7 @@
 #   set-platform <code>    — Set active CTF platform (HTB, THM, etc.)
 #   set-box      <n>       — Set active box and create workspace
 #   set-address  <ip>      — Set target IP address
+#   set-env      <mode>    — Switch active environment (dev or prod)
 #   ctf-status             — Display current session state
 #   ctf-clear              — Clear all session variables
 #   ctf-help               — List all available CTF commands
@@ -366,6 +367,92 @@ set-address() {
 
 
 # =============================================================================
+# set-env <mode>
+# =============================================================================
+# TEACHING NOTE — Explicit environment toggle.
+#
+# CTF_REPO_DIR was previously set by auto-detection at shell startup: if
+# ~/github/CTF_Public existed it was treated as dev, otherwise /opt/CTF_Public
+# was used as prod. On a machine where BOTH paths exist (a common setup when
+# doing active development on the same Kali VM you use for CTF work), the
+# auto-detection always resolved to dev with no way to switch.
+#
+# This command replaces guessing with an explicit choice. The two valid modes
+# map to fixed paths:
+#   dev  → $HOME/github/CTF_Public
+#   prod → /opt/CTF_Public
+#
+# After updating CTF_REPO_DIR, the function re-sources ~/.ctf_env so the
+# change takes effect immediately in the current session — no need to open
+# a new terminal.
+#
+# _ctf_persist is NOT called here. CTF_REPO_DIR is not a session state
+# variable like ADDRESS or PLATFORM — it is a configuration value that
+# describes the machine layout. Persisting it via _ctf_persist would mean
+# rewriting it into ~/.ctf_env on every switch, which creates a chicken-and-
+# egg problem: the file that sets CTF_REPO_DIR is the same file _ctf_persist
+# rewrites. To make a mode permanent across terminal sessions, set
+# CTF_REPO_DIR in ~/.zshrc above the `source ~/.ctf_env` line — the
+# [[ -z "$CTF_REPO_DIR" ]] guard will then respect it on every shell open
+# without auto-detection running at all.
+# =============================================================================
+
+set-env() {
+  local mode="${1:l}"   # :l = lowercase in zsh
+
+  # Known modes and their corresponding paths
+  local dev_path="$HOME/github/CTF_Public"
+  local prod_path="/opt/CTF_Public"
+
+  # Guard: require an argument
+  if [[ -z "$mode" ]]; then
+    _ctf_err "Usage: set-env <dev|prod>"
+    _ctf_info "  dev  → ${dev_path}"
+    _ctf_info "  prod → ${prod_path}"
+    return 1
+  fi
+
+  # Guard: only accept dev or prod
+  if [[ "$mode" != "dev" && "$mode" != "prod" ]]; then
+    _ctf_err "Unknown mode: ${_CTF_BOLD}${mode}${_CTF_RESET}"
+    _ctf_info "Valid modes: ${_CTF_BOLD}dev${_CTF_RESET}, ${_CTF_BOLD}prod${_CTF_RESET}"
+    return 1
+  fi
+
+  # Resolve the target path for the requested mode
+  local target_path
+  if [[ "$mode" == "dev" ]]; then
+    target_path="$dev_path"
+  else
+    target_path="$prod_path"
+  fi
+
+  # Guard: validate the path exists before switching
+  if [[ ! -d "$target_path" ]]; then
+    _ctf_err "Path does not exist: ${_CTF_BOLD}${target_path}${_CTF_RESET}"
+    _ctf_info "Run ctf-sync to create it, or check your install."
+    return 1
+  fi
+
+  # State change — show what changed
+  local old="$CTF_REPO_DIR"
+  export CTF_REPO_DIR="$target_path"
+
+  if [[ -n "$old" && "$old" != "$target_path" ]]; then
+    echo "${_CTF_CYAN}[ENV]${_CTF_RESET}      ${_CTF_DIM}${old}${_CTF_RESET} → ${_CTF_BOLD}${target_path}${_CTF_RESET}"
+  else
+    echo "${_CTF_CYAN}[ENV]${_CTF_RESET}      Set to ${_CTF_BOLD}${target_path}${_CTF_RESET}"
+  fi
+
+  # Re-source so the change takes effect immediately in the current session.
+  # TEACHING NOTE — We source ~/.ctf_env directly rather than "$CTF_REPO_DIR/..."
+  # because ~/.ctf_env is the deployed copy that your shell actually uses.
+  # CTF_REPO_DIR is the repo — a source for updates, not the live file.
+  source "$HOME/.ctf_env" && _ctf_ok "Environment reloaded."
+}
+
+
+# =============================================================================
 # set-platform <code>
 # =============================================================================
 # TEACHING NOTE — Soft vs hard validation.
@@ -663,6 +750,7 @@ ctf-help() {
   echo "  ${_CTF_BOLD}set-platform <code>${_CTF_RESET}    Set active platform (e.g. HTB, THM)"
   echo "  ${_CTF_BOLD}set-box <n>${_CTF_RESET}            Set active box and create workspace"
   echo "  ${_CTF_BOLD}set-address <ip>${_CTF_RESET}       Set target IP address"
+  echo "  ${_CTF_BOLD}set-env <mode>${_CTF_RESET}         Switch environment (dev or prod)"
   echo ""
   echo "${_CTF_CYAN}Session Info:${_CTF_RESET}"
   echo "  ${_CTF_BOLD}ctf-status${_CTF_RESET}             Show current session state"
