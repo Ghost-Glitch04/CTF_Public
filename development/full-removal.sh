@@ -630,8 +630,35 @@ else
   echo "  To reinstall from your dev repo:"
   echo "  ${BOLD}${TARGET_HOME}/github/CTF_Public/setup/ctf-install.sh${RESET}"
   echo ""
-  echo "  Or reload your shell to confirm the source line is gone:"
-  echo "  ${BOLD}exec zsh${RESET}"
+
+  # TEACHING NOTE — Why `kill $PPID` and not `exit` or `exec zsh`.
+  #
+  # `exit` closes the script but leaves the terminal open with stale exports.
+  # `exec zsh` replaces the shell binary but inherits the exported environment
+  # of the current process — variables like PLATFORM and BOXNAME survive it
+  # because they're already in the process's environment table, not loaded
+  # from a file.
+  #
+  # The only clean break is terminating the terminal emulator process itself.
+  # $PPID is the PID of the parent of the current shell — the terminal emulator
+  # that launched it. `kill $PPID` sends SIGTERM to that process, which causes
+  # it to close cleanly. This works regardless of which terminal emulator is
+  # in use (qterminal, xterm, gnome-terminal, etc.) because $PPID always
+  # resolves to whichever process launched this shell session.
+  echo "  ${YELLOW}Note:${RESET} Exported session variables (PLATFORM, BOXNAME, ADDRESS, BOX_DIR)"
+  echo "  ${DIM}survive exec zsh. A new terminal window starts fully clean.${RESET}"
+  echo ""
+  echo -n "  ${YELLOW}Close this terminal now to clear all exported variables? [y/N]:${RESET} "
+  read close_term
+  if [[ "$close_term" == [yY] ]]; then
+    echo ""
+    echo "  ${DIM}Closing terminal...${RESET}"
+    kill $PPID
+  else
+    echo ""
+    echo "  ${DIM}Open a new terminal window when ready to start clean.${RESET}"
+    echo "  ${DIM}Or reload your shell:${RESET} ${BOLD}exec zsh${RESET}"
+  fi
 fi
 
 echo ""
