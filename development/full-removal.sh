@@ -96,7 +96,35 @@ run_cmd() {
 
 
 # =============================================================================
-# SECTION 3 — HELP
+# SECTION 3 — USER RESOLUTION
+# =============================================================================
+# TEACHING NOTE — Why $HOME can't be trusted when running under sudo.
+#
+# When this script is run as `sudo ./full-removal.sh`, the process runs as
+# root. In that context, $HOME resolves to /root — not /home/kali. Any path
+# built from $HOME (like ~/.ctf_env or ~/.zshrc) will silently target the
+# wrong user's home directory, causing the "already gone" false-positive you
+# saw when the file was actually still sitting in /home/kali untouched.
+#
+# The fix: read the *invoking* user from $SUDO_USER (set by sudo to the
+# original caller) and derive their real home from /etc/passwd via `getent`.
+# If the script is run without sudo, $SUDO_USER is empty and we fall back to
+# $USER and $HOME as normal. This makes the script correct in both cases.
+#
+# getent passwd is more reliable than `echo ~username` or `eval echo ~$user`
+# because it reads directly from the system user database rather than relying
+# on shell expansion, which can behave differently across shells and contexts.
+# =============================================================================
+
+TARGET_USER="${SUDO_USER:-$USER}"
+TARGET_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
+
+# Fallback in case getent is unavailable (unlikely on Kali, but safe)
+TARGET_HOME="${TARGET_HOME:-$HOME}"
+
+
+# =============================================================================
+# SECTION 4 — HELP
 # =============================================================================
 
 show_help() {
@@ -188,7 +216,7 @@ fi
 remove_env_file() {
   print_step "Removing ~/.ctf_env"
 
-  local target="$HOME/.ctf_env"
+  local target="$TARGET_HOME/.ctf_env"
 
   if [[ -e "$target" ]]; then
     run_cmd "rm -f $target" rm -f "$target"
@@ -280,8 +308,8 @@ remove_prod_repo() {
 remove_zshrc_patch() {
   print_step "Removing CTF Block from ~/.zshrc"
 
-  local zshrc="$HOME/.zshrc"
-  local backup_dir="$HOME/.ctf_backups"
+  local zshrc="$TARGET_HOME/.zshrc"
+  local backup_dir="$TARGET_HOME/.ctf_backups"
   local timestamp
   timestamp=$(date +"%Y%m%d_%H%M%S")
   local backup_file="${backup_dir}/.zshrc.pre-removal.${timestamp}"
@@ -406,7 +434,7 @@ remove_symlinks() {
 remove_backups() {
   print_step "Removing ~/.ctf_backups"
 
-  local target="$HOME/.ctf_backups"
+  local target="$TARGET_HOME/.ctf_backups"
 
   if [[ -e "$target" ]]; then
     local count
@@ -440,7 +468,7 @@ run_validation() {
   local all_clean=true
 
   # ~/.ctf_env
-  if [[ ! -e "$HOME/.ctf_env" ]]; then
+  if [[ ! -e "$TARGET_HOME/.ctf_env" ]]; then
     print_ok "~/.ctf_env — gone"
   else
     print_err "~/.ctf_env — still present"
@@ -464,12 +492,12 @@ run_validation() {
   fi
 
   # ~/.zshrc CTF source line
-  if ! grep -q "source.*\.ctf_env" "$HOME/.zshrc" 2>/dev/null; then
+  if ! grep -q "source.*\.ctf_env" "$TARGET_HOME/.zshrc" 2>/dev/null; then
     print_ok "~/.zshrc CTF block — gone"
   else
     print_err "~/.zshrc CTF block — still present"
     print_info "Remaining lines:"
-    grep -n "ctf" "$HOME/.zshrc" | while read -r line; do
+    grep -n "ctf" "$TARGET_HOME/.zshrc" | while read -r line; do
       echo "    ${DIM}${line}${RESET}"
     done
     all_clean=false
@@ -490,7 +518,7 @@ run_validation() {
 
   # Backups (only check if --backups was passed)
   if $REMOVE_BACKUPS; then
-    if [[ ! -e "$HOME/.ctf_backups" ]]; then
+    if [[ ! -e "$TARGET_HOME/.ctf_backups" ]]; then
       print_ok "~/.ctf_backups — gone"
     else
       print_err "~/.ctf_backups — still present"
@@ -535,13 +563,13 @@ if $DRY_RUN; then
   echo "  ${YELLOW}Dry run only — nothing was changed.${RESET}"
   echo "  Re-run without ${BOLD}--dry-run${RESET} to perform actual removal."
 else
-  echo "  ${DIM}Dev repo preserved: ~/github/CTF_Public${RESET}"
+  echo "  ${DIM}Dev repo preserved: ${TARGET_HOME}/github/CTF_Public${RESET}"
   if ! $REMOVE_BACKUPS; then
-    echo "  ${DIM}Backups preserved:  ~/.ctf_backups${RESET}"
+    echo "  ${DIM}Backups preserved:  ${TARGET_HOME}/.ctf_backups${RESET}"
   fi
   echo ""
   echo "  To reinstall from your dev repo:"
-  echo "  ${BOLD}~/github/CTF_Public/setup/ctf-install.sh${RESET}"
+  echo "  ${BOLD}${TARGET_HOME}/github/CTF_Public/setup/ctf-install.sh${RESET}"
   echo ""
   echo "  Or reload your shell to confirm the source line is gone:"
   echo "  ${BOLD}exec zsh${RESET}"
