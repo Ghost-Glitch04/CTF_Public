@@ -428,7 +428,65 @@ remove_symlinks() {
 
 
 # =============================================================================
-# STEP 6 — OPTIONALLY REMOVE ~/.ctf_backups
+# STEP 6 — CLEAR SESSION VARIABLES
+# =============================================================================
+# TEACHING NOTE — Why the removal script clears session variables.
+#
+# Shell environment variables are in-memory only — they live in the running
+# shell process, not on disk. The removal script can delete ~/.ctf_env and
+# /opt/CTF, but that doesn't affect variables that are already loaded into
+# your current shell session. Without this step, PLATFORM/BOXNAME/ADDRESS/
+# BOX_DIR survive the removal and ctf-status would still show stale values
+# even though everything on disk has been wiped.
+#
+# We handle this in two places:
+#   1. unset — removes the variables from the current shell immediately.
+#   2. Rewrite ~/.ctf_env export lines — if the file still exists at this
+#      point (possible since remove_env_file runs first but may have been
+#      skipped), blank the persisted values so they don't reload on next
+#      shell open.
+#
+# We cannot call ctf-clear here because: (a) it prompts for confirmation
+# which we've already collected, (b) it calls _ctf_persist which may not
+# be available if the env functions were already removed, and (c) it uses
+# `export VAR=""` rather than `unset`. Direct unset is the right tool here.
+#
+# Why unset rather than export VAR=""?
+# `unset` removes the variable from the environment entirely. A script that
+# checks [[ -n "$PLATFORM" ]] to detect an active session will correctly
+# see "not set" after unset. An empty export string would pass through as
+# an empty value, which some checks treat as "set but empty" — ambiguous.
+# =============================================================================
+
+remove_session_vars() {
+  print_step "Clearing Session Variables"
+
+  # Unset from current shell
+  unset ADDRESS PLATFORM BOXNAME BOX_DIR
+  print_ok "Session variables cleared from current shell."
+
+  # Also blank the persisted values in ~/.ctf_env if the file still exists.
+  # This covers the case where remove_env_file was skipped (file not found
+  # at step 1) but somehow exists now, or a future ordering change.
+  local env_file="$TARGET_HOME/.ctf_env"
+  if [[ -f "$env_file" ]]; then
+    if $DRY_RUN; then
+      print_dry "Would blank export lines in $env_file"
+    else
+      sed -i \
+        -e 's|^export ADDRESS=.*|export ADDRESS=""|' \
+        -e 's|^export PLATFORM=.*|export PLATFORM=""|' \
+        -e 's|^export BOXNAME=.*|export BOXNAME=""|' \
+        -e 's|^export BOX_DIR=.*|export BOX_DIR=""|' \
+        "$env_file"
+      print_ok "Persisted session values blanked in: ${BOLD}${env_file}${RESET}"
+    fi
+  fi
+}
+
+
+# =============================================================================
+# STEP 7 — OPTIONALLY REMOVE ~/.ctf_backups
 # =============================================================================
 
 remove_backups() {
@@ -454,7 +512,7 @@ remove_backups() {
 
 
 # =============================================================================
-# STEP 7 — VALIDATE
+# STEP 8 — VALIDATE
 # =============================================================================
 # TEACHING NOTE — Always verify. A removal script that only removes (and
 # doesn't confirm) gives you false confidence. Each check uses the same
@@ -545,6 +603,7 @@ remove_ctf_workspace
 remove_prod_repo
 remove_zshrc_patch
 remove_symlinks
+remove_session_vars
 
 if $REMOVE_BACKUPS; then
   remove_backups
