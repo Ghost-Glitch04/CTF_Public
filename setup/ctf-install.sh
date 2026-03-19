@@ -405,6 +405,27 @@ run_build_directories() {
   print_step "Building CTF Directory Tree"
   print_info "Workspace root: ${BOLD}${CTF_BASE}${RESET}"
 
+  # TEACHING NOTE — Clear stale session variables before building the workspace.
+  #
+  # Shell environment variables persist across installs as long as the shell
+  # process is alive. If you ran set-box in a previous session and then ran
+  # ctf-install without opening a new terminal, PLATFORM/BOXNAME/ADDRESS/BOX_DIR
+  # would still be populated from the old session — even though the workspace
+  # tree is being rebuilt from scratch. This is invisible and confusing: ctf-status
+  # would show a box that was set before the reinstall, giving false confidence
+  # that the session is live when it may point at a path that no longer exists.
+  #
+  # Clearing them here is unconditional and silent — no prompt, no output. The
+  # install is a fresh start; session state should reflect that. The user can
+  # run set-platform / set-box / set-address again once the install completes.
+  #
+  # We use `unset` rather than `export VAR=""` because unset removes the
+  # variable entirely from the environment. An empty export would still pass
+  # an empty string to child processes, which could cause unexpected behavior
+  # in scripts that check [[ -n "$PLATFORM" ]] to decide whether a session is
+  # active. Unset makes the "not set" state unambiguous.
+  unset ADDRESS PLATFORM BOXNAME BOX_DIR
+
   local use_sudo=false
   [[ "$CTF_BASE" == /opt/* ]] && use_sudo=true
 
