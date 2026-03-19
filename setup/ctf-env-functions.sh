@@ -621,6 +621,16 @@ set-box() {
       fi
     done
 
+    # Fix ownership so the normal user can write into the workspace.
+    # TEACHING NOTE — sudo mkdir creates dirs owned by root. Even though
+    # ctf-install.sh chowns /opt/CTF at install time, new box directories are
+    # created here at runtime — after install — so they also need an explicit
+    # chown. The recursive flag covers BOX_DIR and all its subdirs in one call,
+    # matching the same pattern used in ctf-install.sh's run_build_directories.
+    if $use_sudo; then
+      sudo chown -R "${USER}:${USER}" "$BOX_DIR"
+    fi
+
     _ctf_ok "Created workspace: ${_CTF_BOLD}${BOX_DIR}${_CTF_RESET}"
     _ctf_info "Folders: ${_CTF_DIM}${_CTF_BOX_DIRS[*]}${_CTF_RESET}"
 
