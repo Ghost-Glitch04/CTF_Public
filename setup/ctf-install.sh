@@ -383,10 +383,23 @@ run_patch_zshrc() {
 # =============================================================================
 # STEP 5 — BUILD CTF DIRECTORY TREE
 # =============================================================================
-# TEACHING NOTE — $use_sudo applied consistently to base dir and all subdirs.
+# TEACHING NOTE — $use_sudo applied consistently; ownership fixed once at end.
+#
 # Whether CTF_BASE requires elevated permissions is determined once and stored
-# in a flag, then used uniformly throughout the function. A single decision
-# point prevents the base and subdirs from ever getting out of sync.
+# in $use_sudo, then used uniformly throughout the function.
+#
+# Ownership is set with a single recursive chown AFTER all directories are
+# built, rather than chowning each directory individually. This covers three
+# cases cleanly:
+#   1. Fresh install  — base + all platform subdirs just created by sudo mkdir
+#   2. Re-run         — base already exists (chown was previously skipped),
+#                       new platforms added since last run
+#   3. Partial state  — any mix of existing and new dirs
+#
+# A per-directory chown inside the loop would miss case 2 entirely: if
+# $CTF_BASE already exists, the loop runs but the base itself never gets
+# re-chowned. The recursive chown at the end is immune to this because it
+# always runs regardless of what was created vs skipped above.
 # =============================================================================
 run_build_directories() {
   print_step "Building CTF Directory Tree"
@@ -398,7 +411,6 @@ run_build_directories() {
   if [[ ! -d "$CTF_BASE" ]]; then
     if $use_sudo; then
       sudo mkdir -p "$CTF_BASE"
-      sudo chown -R "$USER":"$USER" "$CTF_BASE"
     else
       mkdir -p "$CTF_BASE"
     fi
@@ -422,6 +434,13 @@ run_build_directories() {
       print_skip "${pdir} already exists"
     fi
   done
+
+  # Fix ownership recursively after all dirs are built.
+  # Runs unconditionally so re-runs and partial states are always corrected.
+  if $use_sudo; then
+    sudo chown -R "$USER":"$USER" "$CTF_BASE"
+    print_ok "Ownership set: ${BOLD}${CTF_BASE}${RESET} → ${USER}"
+  fi
 }
 
 
