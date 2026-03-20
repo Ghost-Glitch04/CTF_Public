@@ -539,12 +539,3 @@ echo ""
 echo "  ${CYAN}Location:${RESET}  $INSTALL_DIR"
 echo "  ${CYAN}Owner:${RESET}     $REPO_OWNER"
 echo "  ${CYAN}Scripts:${RESET}   $script_count executable"
-echo ""
-echo "  ${DIM}Tip: Add this to your toolkit:${RESET}"
-if [[ "$INSTALL_DIR" == /opt/* ]]; then
-  echo "  ${BOLD}sudo ln -sf ${INSTALL_DIR}/setup/ctf-sync.sh /usr/local/bin/ctf-sync${RESET}"
-else
-  echo "  ${BOLD}ln -sf ${INSTALL_DIR}/setup/ctf-sync.sh /usr/local/bin/ctf-sync${RESET}"
-fi
-echo "  ${DIM}Then run ${BOLD}ctf-sync${RESET}${DIM} from anywhere to stay up to date.${RESET}"
-echo ""
