@@ -19,6 +19,7 @@
 # USAGE:
 #   ./ctf-install.sh              # auto-detect install location
 #   ./ctf-install.sh --prod       # force production path (/opt/CTF_Public)
+#   ./ctf-install.sh --yes        # skip confirmation prompt (for scripting)
 #   ./ctf-install.sh --check      # dependency check only, no changes made
 #   ./ctf-install.sh --help       # show help
 #
@@ -87,11 +88,13 @@
 FORCE_PROD=false
 CHECK_ONLY=false
 SHOW_HELP=false
+SKIP_CONFIRM=false
 
 for arg in "$@"; do
   case "$arg" in
     --prod)    FORCE_PROD=true ;;
     --check)   CHECK_ONLY=true ;;
+    --yes|-y)  SKIP_CONFIRM=true ;;
     --help|-h) SHOW_HELP=true ;;
     *)
       # TEACHING NOTE — Fixed typo in error message. (Bug fix #1)
@@ -218,6 +221,7 @@ show_help() {
   echo "${CYAN}USAGE:${RESET}"
   echo "  ./ctf-install.sh              Run full installation (auto-detect path)"
   echo "  ./ctf-install.sh --prod       Run installation targeting /opt/CTF_Public"
+  echo "  ./ctf-install.sh --yes        Skip confirmation prompt (for scripting)"
   echo "  ./ctf-install.sh --check      Dependency check only, no changes made"
   echo "  ./ctf-install.sh --help       Show this message"
   echo ""
@@ -582,14 +586,32 @@ else
   echo "  ${DIM}Mode:    production (auto-detected)${RESET}"
 fi
 
-echo ""
-echo -n "${YELLOW}  Continue? [y/N]:${RESET} "
-read confirm
-if [[ "$confirm" != [yY] ]]; then
+# TEACHING NOTE — --yes / SKIP_CONFIRM gate.
+#
+# The confirmation prompt is the only interactive step in the installer.
+# Wrapping it in `if ! $SKIP_CONFIRM` means --yes bypasses it entirely
+# while leaving every subsequent step (backup, deploy, sync, etc.) unchanged.
+#
+# This mirrors the identical pattern in full-removal.sh, deliberately.
+# Consistent flag names across paired scripts means you can script both
+# without needing separate workarounds for each:
+#
+#   ./ctf-install.sh --yes --prod
+#   ./full-removal.sh --yes
+#
+# SKIP_CONFIRM has no effect on --check (which exits before reaching here)
+# and no effect on --dry-run (full-removal.sh only). Every step still runs
+# and still prints full output — only the interactive pause is skipped.
+if ! $SKIP_CONFIRM; then
   echo ""
-  echo "${DIM}  Aborted. Nothing changed.${RESET}"
-  echo ""
-  exit 0
+  echo -n "${YELLOW}  Continue? [y/N]:${RESET} "
+  read confirm
+  if [[ "$confirm" != [yY] ]]; then
+    echo ""
+    echo "${DIM}  Aborted. Nothing changed.${RESET}"
+    echo ""
+    exit 0
+  fi
 fi
 
 # --- Run all steps ------------------------------------------------------------
@@ -617,6 +639,7 @@ echo ""
 echo "  ${CYAN}Available commands:${RESET}"
 echo "  ${BOLD}ctf-install${RESET}              Re-run this installer"
 echo "  ${BOLD}ctf-install --prod${RESET}       Re-run targeting production install"
+echo "  ${BOLD}ctf-install --yes${RESET}        Re-run without confirmation prompt"
 echo "  ${BOLD}ctf-install --check${RESET}      Dependency check only"
 echo "  ${BOLD}ctf-sync${RESET}                 Pull latest repo changes"
 echo "  ${BOLD}ctf-sync --prod${RESET}          Pull latest changes for production"
