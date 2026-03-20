@@ -767,7 +767,7 @@ ctf-help() {
   echo "  ${_CTF_BOLD}ctf-help${_CTF_RESET}               Show this message"
   echo ""
   echo "${_CTF_CYAN}Session Control:${_CTF_RESET}"
-  echo "  ${_CTF_BOLD}ctf-clear${_CTF_RESET}              Clear session variables (open new terminal to purge exports)"
+  echo "  ${_CTF_BOLD}ctf-clear${_CTF_RESET}              Clear all session variables"
   echo ""
 
   # TEACHING NOTE — Added --prod flag entries to Maintenance section. (Refactor #4)
