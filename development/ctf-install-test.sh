@@ -260,12 +260,22 @@ check "${REPO_DIR} owned by ${TARGET_USER}" \
 # =============================================================================
 # SECTION 5 — RUN INSTALLER
 # =============================================================================
-# TEACHING NOTE — Capturing output while still displaying it.
+# TEACHING NOTE — Capturing output while still displaying it, and zsh vs bash
+# exit code capture after a pipe.
 #
 # We want to show the installer's output in real time (so you can watch it
 # run) AND check its exit code. Piping to tee lets us do both: the output
 # goes to the terminal and to a temp file we can inspect afterwards.
-# The exit code is captured from PIPESTATUS[0] (the installer), not tee.
+#
+# Exit code capture differs between bash and zsh:
+#   bash: ${PIPESTATUS[0]}   — 0-indexed array, uppercase
+#   zsh:  ${pipestatus[1]}   — 1-indexed array, lowercase
+#
+# This script uses zsh (#!/bin/zsh shebang). Using ${PIPESTATUS[0]} in zsh
+# silently returns empty, making the exit code check always fail even when
+# the installer succeeds — exactly the false [FAIL] seen in the first test run.
+# The fix is ${pipestatus[1]}: element 1 is the first command in the pipe
+# (the installer), element 2 would be tee.
 # =============================================================================
 
 print_step "Install — ctf-install.sh --prod --yes"
@@ -274,9 +284,12 @@ INSTALL_LOG=$(mktemp)
 print_cmd "${INSTALL_SCRIPT} --prod --yes"
 echo ""
 
-# Run as the target user (not root) to match real usage
-sudo -u "$TARGET_USER" "$INSTALL_SCRIPT" --prod --yes 2>&1 | tee "$INSTALL_LOG"
-install_exit=${PIPESTATUS[0]}
+# Run as the target user (not root) to match real usage.
+# -n (non-interactive) prevents sudo from prompting for a password mid-test.
+# The outer `sudo` that launched this script already holds credentials;
+# a nested `sudo -u` for a different user would prompt again without -n.
+sudo -u "$TARGET_USER" -n "$INSTALL_SCRIPT" --prod --yes 2>&1 | tee "$INSTALL_LOG"
+install_exit=${pipestatus[1]}
 
 echo ""
 check "ctf-install.sh exited successfully"  test $install_exit -eq 0
@@ -338,8 +351,9 @@ fi
 
 print_step "Session — set-platform / set-box / set-address"
 
-# Run session setup in a subshell, capture all four variable values
-session_output=$(sudo -u "$TARGET_USER" zsh -c "
+# Run session setup in a subshell, capture all four variable values.
+# -n prevents sudo from prompting mid-test (same reason as the installer call).
+session_output=$(sudo -u "$TARGET_USER" -n zsh -c "
   source ${TARGET_HOME}/.ctf_env
   set-platform ${TEST_PLATFORM} 2>&1
   set-box ${TEST_BOX} 2>&1
@@ -403,7 +417,7 @@ if $CLEANUP; then
   print_cmd "sudo ${REMOVAL_SCRIPT} --yes"
   echo ""
   sudo "$REMOVAL_SCRIPT" --yes 2>&1 | sed 's/^/  /'
-  removal_exit=${PIPESTATUS[0]}
+  removal_exit=${pipestatus[1]}
   echo ""
 
   check "full-removal.sh exited successfully"      test $removal_exit -eq 0
