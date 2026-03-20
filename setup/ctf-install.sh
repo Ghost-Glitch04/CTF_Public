@@ -482,10 +482,26 @@ run_symlinks() {
   fi
 
   local count=0
+  # TEACHING NOTE — Denylist: sourced files must not be symlinked into PATH.
+  # ctf-env-functions.sh is sourced by ~/.ctf_env, not run as a command.
+  # Symlinking it creates a misleading `ctf-env-functions` command that
+  # appears executable but produces no useful output when called directly.
+  # Adding it here means the loop stays data-driven — drop any future
+  # sourced-only files into this list and they are automatically excluded.
+  local symlink_denylist=("ctf-env-functions.sh")
+
   for script in "$SETUP_DIR"/*.sh; do
     [[ -f "$script" ]] || continue
 
     local filename="${script##*/}"
+
+    # Skip any file on the denylist
+    local skip=false
+    for denied in "${symlink_denylist[@]}"; do
+      [[ "$filename" == "$denied" ]] && skip=true && break
+    done
+    $skip && continue
+
     local linkname="${filename%.sh}"
     local linkpath="${SYMLINK_DIR}/${linkname}"
 
