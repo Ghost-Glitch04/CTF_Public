@@ -54,28 +54,80 @@
 # =============================================================================
 
 # =============================================================================
+# SUDO-AWARE HOME RESOLUTION
+# =============================================================================
+# TEACHING NOTE — Why $HOME can't be trusted directly.
+#
+# When this file is sourced under `sudo` (e.g. `sudo zsh` or a script that
+# sources this file with elevated privileges), the shell sets $HOME to the
+# root user's home directory (/root). Any path built from $HOME then points
+# into root's home instead of the invoking user's — meaning _ctf_persist
+# would rewrite /root/.ctf_env, set-env would write /root/.ctf_env_mode, and
+# the repo dir resolution would look for /root/github/CTF_Public. None of
+# those are where your actual files live.
+#
+# The fix: resolve the real user's home once, at the top, into _CTF_HOME.
+# Every path in this file is built from $_CTF_HOME instead of $HOME.
+#
+# How it works:
+#   1. If $SUDO_USER is set, the script is running under sudo. We use
+#      `getent passwd` to look up that user's home directory from the system
+#      user database — this is more reliable than `eval echo ~$SUDO_USER`
+#      because it doesn't depend on shell expansion or the sudoers environment.
+#   2. If $SUDO_USER is not set, we're running as the normal user and $HOME
+#      is already correct. Fall back to it directly.
+#
+# The leading underscore follows the private-variable convention used
+# throughout this file — $_CTF_HOME is an internal detail, not something
+# a user would set or reference directly.
+# =============================================================================
+
+if [[ -n "$SUDO_USER" ]]; then
+  _CTF_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+else
+  _CTF_HOME="$HOME"
+fi
+
+# =============================================================================
 # REPO DIR RESOLUTION
 # =============================================================================
-# TEACHING NOTE — This block runs every time a terminal session starts because
-# this file is sourced by ~/.zshrc. It resolves and exports CTF_REPO_DIR so
-# all other scripts that read it get a consistent value without each one
-# needing to repeat the detection logic independently.
+# TEACHING NOTE — Three-tier resolution for CTF_REPO_DIR. (Bug fix #A)
 #
-# We don't prompt here (unlike ctf-sync.sh on a first run) because this file
-# is sourced non-interactively every time a terminal opens. A prompt at shell
-# startup would be disruptive and confusing. We fall back to the production
-# path silently instead — by the time a dev has run ctf-sync.sh once, the
-# repo exists on disk and the auto-detection finds it without any prompt.
+# The original two-tier logic was:
+#   1. If ~/github/CTF_Public exists → dev
+#   2. Otherwise → prod (/opt/CTF_Public)
 #
-# The [[ -z "$CTF_REPO_DIR" ]] outer guard means we only run detection if the
-# variable isn't already set. This respects a value exported earlier in
-# ~/.zshrc or by the user's own environment, and avoids overwriting it on
-# every terminal open.
+# The problem: on a dual-install machine (common when doing active dev on the
+# same Kali VM you use for CTF work), BOTH paths exist. Auto-detection always
+# resolved to dev with no way to switch — and even after `set-env prod`
+# exported CTF_REPO_DIR to /opt/CTF_Public for the current session, the NEXT
+# terminal window would silently revert to dev because the export was never
+# persisted anywhere.
+#
+# The fix introduces a three-tier resolution:
+#   1. If ~/.ctf_env_mode exists, source it — this is written by `set-env`
+#      and represents an explicit user choice that survives terminal restarts.
+#   2. If no mode file, fall back to auto-detection (dev if ~/github path
+#      exists, prod otherwise) — same as before for machines that have never
+#      called set-env.
+#   3. The [[ -z "$CTF_REPO_DIR" ]] outer guard still applies: if the variable
+#      is already set (e.g. exported in ~/.zshrc above the source line), skip
+#      all detection entirely and respect the user's override.
+#
+# This means:
+#   - First-time users: auto-detection works as before, no behaviour change.
+#   - Users who run `set-env prod`: the choice is written to ~/.ctf_env_mode
+#     and persists across all future terminal sessions automatically.
+#   - Power users: set CTF_REPO_DIR in ~/.zshrc for a hardcoded override that
+#     wins over everything else.
 # =============================================================================
 
 if [[ -z "$CTF_REPO_DIR" ]]; then
-  if [[ -d "$HOME/github/CTF_Public" ]]; then
-    export CTF_REPO_DIR="$HOME/github/CTF_Public"
+  if [[ -f "$_CTF_HOME/.ctf_env_mode" ]]; then
+    # Explicit mode set by `set-env` — always wins over auto-detection.
+    source "$_CTF_HOME/.ctf_env_mode"
+  elif [[ -d "$_CTF_HOME/github/CTF_Public" ]]; then
+    export CTF_REPO_DIR="$_CTF_HOME/github/CTF_Public"
   else
     # TEACHING NOTE — Collapsed redundant elif/else. (Prior bug fix #1)
     #
@@ -237,9 +289,9 @@ _ctf_persist() {
       "export BOX_DIR="*)  echo "export BOX_DIR=\"${BOX_DIR}\""   ;;
       *)                   echo "$line"                            ;;
     esac
-  done < <(sed 's/\r//' "$HOME/.ctf_env") > "$tmp"
+  done < <(sed 's/\r//' "$_CTF_HOME/.ctf_env") > "$tmp"
 
-  mv "$tmp" "$HOME/.ctf_env"
+  mv "$tmp" "$_CTF_HOME/.ctf_env"
 }
 
 
@@ -342,9 +394,25 @@ set-address() {
   fi
 
   # Guard: octet range check (each part must be 0–255)
-  local IFS='.'
+  # TEACHING NOTE — Bug fix #B: removed redundant `local IFS='.'`.
+  #
+  # The original code set `local IFS='.'` immediately before using zsh's
+  # `(@s/./)` flag to split the IP. These two things are doing the same job
+  # by different mechanisms, and they don't interact — zsh's @s flag splits
+  # explicitly on a delimiter and does NOT consult $IFS at all. The local IFS
+  # line was a bash idiom that had no effect here.
+  #
+  # The risk was misleading future readers: someone might remove the (@s/./)
+  # form thinking $IFS was already handling the split, silently breaking the
+  # octet check. Removing the dead code makes the intent unambiguous.
+  #
+  # Bug fix #C: added quotes to the for loop — `"${octets[@]}"` instead of
+  # `$octets`. Without quotes, zsh word-splitting fires on array elements that
+  # contain whitespace or glob characters. Impossible with IP octets in
+  # practice, but inconsistent with how every other loop in this file handles
+  # arrays. Standardized for safety.
   local octets=("${(@s/./)new_ip}")
-  for octet in $octets; do
+  for octet in "${octets[@]}"; do
     if (( octet > 255 )); then
       _ctf_err "Invalid IP address (octet out of range): ${_CTF_BOLD}${new_ip}${_CTF_RESET}"
       return 1
@@ -369,7 +437,7 @@ set-address() {
 # =============================================================================
 # set-env <mode>
 # =============================================================================
-# TEACHING NOTE — Explicit environment toggle.
+# TEACHING NOTE — Explicit environment toggle with persistent mode file.
 #
 # CTF_REPO_DIR was previously set by auto-detection at shell startup: if
 # ~/github/CTF_Public existed it was treated as dev, otherwise /opt/CTF_Public
@@ -377,31 +445,41 @@ set-address() {
 # doing active development on the same Kali VM you use for CTF work), the
 # auto-detection always resolved to dev with no way to switch.
 #
-# This command replaces guessing with an explicit choice. The two valid modes
-# map to fixed paths:
-#   dev  → $HOME/github/CTF_Public
-#   prod → /opt/CTF_Public
+# A previous version of this function fixed the in-session problem by
+# exporting CTF_REPO_DIR to the requested path — but that export lived only
+# in memory. The next terminal window would source this file fresh, the
+# auto-detection block at the top would run again, and the choice would
+# silently revert to dev.
 #
-# After updating CTF_REPO_DIR, the function re-sources ~/.ctf_env so the
-# change takes effect immediately in the current session — no need to open
-# a new terminal.
+# TEACHING NOTE — Bug fix #A: persist the mode choice to ~/.ctf_env_mode.
 #
-# _ctf_persist is NOT called here. CTF_REPO_DIR is not a session state
-# variable like ADDRESS or PLATFORM — it is a configuration value that
-# describes the machine layout. Persisting it via _ctf_persist would mean
-# rewriting it into ~/.ctf_env on every switch, which creates a chicken-and-
-# egg problem: the file that sets CTF_REPO_DIR is the same file _ctf_persist
-# rewrites. To make a mode permanent across terminal sessions, set
-# CTF_REPO_DIR in ~/.zshrc above the `source ~/.ctf_env` line — the
-# [[ -z "$CTF_REPO_DIR" ]] guard will then respect it on every shell open
-# without auto-detection running at all.
+# The fix is to write a single export line to ~/.ctf_env_mode when the user
+# calls set-env. The resolution block at the top of this file now checks for
+# that file first, before any auto-detection runs. This means:
+#
+#   set-env prod   →  writes `export CTF_REPO_DIR="/opt/CTF_Public"` to
+#                     ~/.ctf_env_mode, which is sourced on every subsequent
+#                     terminal open, overriding auto-detection permanently
+#                     until the user explicitly calls set-env again.
+#
+# Why a separate file and not _ctf_persist?
+# _ctf_persist rewrites ~/.ctf_env, which is sourced by ~/.zshrc. CTF_REPO_DIR
+# is not a session state variable like ADDRESS — it is a configuration value
+# about the machine layout. Writing it into ~/.ctf_env would create a chicken-
+# and-egg problem: the file that sets CTF_REPO_DIR would be the same file that
+# gets rewritten, and _ctf_persist's line-matching logic doesn't know about
+# CTF_REPO_DIR. A dedicated ~/.ctf_env_mode file is simpler and safer: it has
+# exactly one job (record the env choice) and is easy to inspect or delete.
+#
+# To clear the persisted mode and return to auto-detection:
+#   rm ~/.ctf_env_mode && source ~/.ctf_env
 # =============================================================================
 
 set-env() {
   local mode="${1:l}"   # :l = lowercase in zsh
 
   # Known modes and their corresponding paths
-  local dev_path="$HOME/github/CTF_Public"
+  local dev_path="$_CTF_HOME/github/CTF_Public"
   local prod_path="/opt/CTF_Public"
 
   # Guard: require an argument
@@ -428,9 +506,19 @@ set-env() {
   fi
 
   # Guard: validate the path exists before switching
+  # TEACHING NOTE — Improved error message to distinguish install vs sync.
+  #
+  # The previous message said "Run ctf-sync to create it" for both modes,
+  # which is misleading for prod: on a fresh machine, /opt/CTF_Public won't
+  # exist until ctf-install --prod has been run. ctf-sync only works once
+  # the repo is already cloned. Updated to name the right command per mode.
   if [[ ! -d "$target_path" ]]; then
     _ctf_err "Path does not exist: ${_CTF_BOLD}${target_path}${_CTF_RESET}"
-    _ctf_info "Run ctf-sync to create it, or check your install."
+    if [[ "$mode" == "prod" ]]; then
+      _ctf_info "Run 'ctf-install --prod' to set up production, or 'ctf-sync --prod' to pull an existing install."
+    else
+      _ctf_info "Run 'ctf-sync' to clone the repo, or check your install."
+    fi
     return 1
   fi
 
@@ -444,11 +532,21 @@ set-env() {
     echo "${_CTF_CYAN}[ENV]${_CTF_RESET}      Set to ${_CTF_BOLD}${target_path}${_CTF_RESET}"
   fi
 
+  # Persist the choice so it survives terminal restarts.
+  # TEACHING NOTE — We write a single `export` line to ~/.ctf_env_mode rather
+  # than relying on _ctf_persist, for the reasons explained in the function
+  # header above. The file is small and human-readable — you can `cat` it to
+  # confirm what mode is active, and `rm` it to return to auto-detection.
+  echo "export CTF_REPO_DIR=\"${target_path}\"" > "$_CTF_HOME/.ctf_env_mode" \
+    || { _ctf_err "Could not write mode file: ~/.ctf_env_mode"; return 1; }
+
+  _ctf_ok "Mode '${mode}' persisted to ~/.ctf_env_mode"
+
   # Re-source so the change takes effect immediately in the current session.
   # TEACHING NOTE — We source ~/.ctf_env directly rather than "$CTF_REPO_DIR/..."
   # because ~/.ctf_env is the deployed copy that your shell actually uses.
   # CTF_REPO_DIR is the repo — a source for updates, not the live file.
-  source "$HOME/.ctf_env" && _ctf_ok "Environment reloaded."
+  source "$_CTF_HOME/.ctf_env" && _ctf_ok "Environment reloaded."
 }
 
 
@@ -489,7 +587,15 @@ set-platform() {
     for entry in "${KNOWN_PLATFORMS[@]}"; do codes+=("${entry%%:*}"); done
     _ctf_info "Known: ${_CTF_BOLD}${codes[*]}${_CTF_RESET}"
     echo -n "  Continue anyway? [y/N]: "
-    read confirm
+    # TEACHING NOTE — Bug fix #D: added -r flag to both `read confirm` calls.
+    #
+    # Without -r, the shell treats a backslash in the input as a line-
+    # continuation escape: typing `\` then Enter silently consumes the next
+    # line rather than registering as a "N" confirmation. With -r, backslash
+    # is treated as a literal character — the input is read exactly as typed.
+    # The -r flag is already used correctly in _ctf_persist's while loop;
+    # these interactive reads are now consistent with that.
+    read -r confirm
     [[ "$confirm" != [yY] ]] && echo "${_CTF_DIM}  Aborted.${_CTF_RESET}" && return 1
   fi
 
@@ -524,13 +630,26 @@ set-platform() {
   # is under /opt/, then apply sudo only if needed. This keeps both scripts
   # consistent and means "does this need elevated permissions?" is always
   # answered the same way regardless of which script is running.
+  #
+  # TEACHING NOTE — Bug fix #E: sudo mkdir failure is now caught and surfaced.
+  #
+  # The previous version used `sudo mkdir -p "$pdir" && _ctf_ok "..."`. If sudo
+  # fails (cancelled password prompt, insufficient permissions), mkdir never
+  # runs and _ctf_ok is never echoed — but the function continued silently,
+  # calling _ctf_persist and _ctf_write_box_env against a platform directory
+  # that didn't actually exist. The user saw no error.
+  #
+  # The fix uses `|| { _ctf_err ...; return 1; }` to catch the failure and
+  # abort immediately. The _ctf_ok call is moved outside the mkdir line so it
+  # only fires after a confirmed successful create.
   local pdir="${CTF_BASE}/${new_platform}"
   if [[ ! -d "$pdir" ]]; then
     if [[ "$CTF_BASE" == /opt/* ]]; then
-      sudo mkdir -p "$pdir" && _ctf_ok "Created: ${_CTF_BOLD}${pdir}${_CTF_RESET}"
+      sudo mkdir -p "$pdir" || { _ctf_err "Failed to create: ${_CTF_BOLD}${pdir}${_CTF_RESET}"; return 1; }
     else
-      mkdir -p "$pdir" && _ctf_ok "Created: ${_CTF_BOLD}${pdir}${_CTF_RESET}"
+      mkdir -p "$pdir"      || { _ctf_err "Failed to create: ${_CTF_BOLD}${pdir}${_CTF_RESET}"; return 1; }
     fi
+    _ctf_ok "Created: ${_CTF_BOLD}${pdir}${_CTF_RESET}"
   fi
 
   # Update BOX_DIR if a box is already set
@@ -607,6 +726,10 @@ set-box() {
     # Using a local flag (use_sudo) rather than repeating the /opt/* check in
     # every mkdir call keeps the decision in one place and makes the logic
     # easy to follow at a glance.
+    #
+    # TEACHING NOTE — Bug fix #E (continued): mkdir failures in the subdir
+    # loop are now caught. If any subdir creation fails, the function aborts
+    # immediately rather than continuing to chown a partial workspace.
     local use_sudo=false
     [[ "$CTF_BASE" == /opt/* ]] && use_sudo=true
 
@@ -615,9 +738,11 @@ set-box() {
     # The loop here doesn't need to change. Data drives behavior.
     for subdir in "${_CTF_BOX_DIRS[@]}"; do
       if $use_sudo; then
-        sudo mkdir -p "${BOX_DIR}/${subdir}"
+        sudo mkdir -p "${BOX_DIR}/${subdir}" \
+          || { _ctf_err "Failed to create: ${_CTF_BOLD}${BOX_DIR}/${subdir}${_CTF_RESET}"; return 1; }
       else
-        mkdir -p "${BOX_DIR}/${subdir}"
+        mkdir -p "${BOX_DIR}/${subdir}" \
+          || { _ctf_err "Failed to create: ${_CTF_BOLD}${BOX_DIR}/${subdir}${_CTF_RESET}"; return 1; }
       fi
     done
 
@@ -703,15 +828,23 @@ ctf-status() {
   # "$HOME/github/CTF_Public" means any dev checkout under the user's home
   # directory is correctly labelled "dev", regardless of its exact location.
   local env_label
-  if [[ "$CTF_REPO_DIR" == "$HOME"* ]]; then
+  if [[ "$CTF_REPO_DIR" == "$_CTF_HOME"* ]]; then
     env_label="${_CTF_YELLOW}dev${_CTF_RESET}  ${_CTF_DIM}(${CTF_REPO_DIR})${_CTF_RESET}"
   else
     env_label="${_CTF_GREEN}prod${_CTF_RESET} ${_CTF_DIM}(${CTF_REPO_DIR})${_CTF_RESET}"
   fi
 
+  # Show whether the mode was set explicitly or via auto-detection
+  local mode_source
+  if [[ -f "$_CTF_HOME/.ctf_env_mode" ]]; then
+    mode_source="${_CTF_DIM}(explicit — ~/.ctf_env_mode)${_CTF_RESET}"
+  else
+    mode_source="${_CTF_DIM}(auto-detected)${_CTF_RESET}"
+  fi
+
   echo ""
   echo "${_CTF_BOLD}${_CTF_CYAN}╔══ CTF Session Status ══════════════════════╗${_CTF_RESET}"
-  echo "${_CTF_BOLD}${_CTF_CYAN}║${_CTF_RESET}  Env        : ${env_label}"
+  echo "${_CTF_BOLD}${_CTF_CYAN}║${_CTF_RESET}  Env        : ${env_label} ${mode_source}"
   echo "${_CTF_BOLD}${_CTF_CYAN}║${_CTF_RESET}  Platform   : ${platform_display}"
   echo "${_CTF_BOLD}${_CTF_CYAN}║${_CTF_RESET}  Box        : ${box_display}"
   echo "${_CTF_BOLD}${_CTF_CYAN}║${_CTF_RESET}  Address    : ${address_display}"
@@ -732,7 +865,9 @@ ctf-status() {
 
 ctf-clear() {
   echo -n "${_CTF_YELLOW}[WARN]${_CTF_RESET}  Clear all CTF session variables? [y/N]: "
-  read confirm
+  # TEACHING NOTE — Bug fix #D (continued): read -r for consistent backslash
+  # handling. See the same fix in set-platform for the full explanation.
+  read -r confirm
   if [[ "$confirm" == [yY] ]]; then
     export ADDRESS="" PLATFORM="" BOXNAME="" BOX_DIR=""
     _ctf_persist
@@ -806,5 +941,8 @@ ctf-help() {
   echo "${_CTF_CYAN}Active Environment:${_CTF_RESET}"
   echo "  ${_CTF_BOLD}CTF_REPO_DIR${_CTF_RESET}  ${_CTF_DIM}${CTF_REPO_DIR}${_CTF_RESET}"
   echo "  ${_CTF_BOLD}CTF_BASE${_CTF_RESET}      ${_CTF_DIM}${CTF_BASE}${_CTF_RESET}"
+  if [[ -f "$_CTF_HOME/.ctf_env_mode" ]]; then
+    echo "  ${_CTF_BOLD}Mode file${_CTF_RESET}     ${_CTF_DIM}~/.ctf_env_mode (use 'rm ~/.ctf_env_mode' to reset to auto-detect)${_CTF_RESET}"
+  fi
   echo ""
 }
