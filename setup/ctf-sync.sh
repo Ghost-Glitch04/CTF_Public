@@ -6,7 +6,8 @@
 #   Checks if the CTF_Public repo exists locally.
 #   If yes  → pulls latest changes from GitHub
 #   If no   → clones the full repo
-#   Then    → fixes ownership and makes all scripts executable
+#   Then    → fixes ownership, makes all scripts executable,
+#             and deploys ~/.ctf_env from the repo
 #
 # USAGE:
 #   ./ctf-sync.sh              # auto-detect install (dev path wins if both exist)
@@ -706,7 +707,15 @@ if [[ -f "$CTF_ENV_SOURCE" ]]; then
   # [OK] and [INFO] messages on that flag. If cp fails, the flag stays false
   # and only the warning prints. If cp succeeds, only the success messages
   # print. The two states are now mutually exclusive.
-  local deploy_ok=false
+  #
+  # TEACHING NOTE — Plain variable, not local, at script scope.
+  #
+  # `local` is only valid inside a function body. Using it at the top level
+  # of a script is undefined behaviour in zsh — the same issue documented
+  # at the conflict recovery block (Bug fix #1). deploy_ok lives directly
+  # in the script body, not inside a function, so plain variable assignment
+  # is correct here.
+  deploy_ok=false
   cp "$CTF_ENV_SOURCE" "$CTF_ENV_FILE" && deploy_ok=true \
     || { echo "${YELLOW}[WARN]${RESET}  Could not write ~/.ctf_env — copy manually:"; \
          echo "         ${BOLD}cp ${CTF_ENV_SOURCE} ${CTF_ENV_FILE}${RESET}"; }
