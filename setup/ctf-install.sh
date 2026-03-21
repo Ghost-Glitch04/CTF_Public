@@ -3,18 +3,19 @@
 # ctf-install.sh — CTF Toolkit Machine Installer
 # =============================================================================
 # ABOUT:
-#   One-time setup script for any machine you work from.
-#   Run this once after cloning CTF_Public to a new machine.
-#   Safe to re-run — backs up existing config before overwriting.
+#   Setup script for any machine you work from.
+#   Handles both fresh installs (clones the repo itself) and re-runs
+#   (pulls latest changes, redeploys session commands, rebuilds dirs).
+#   Safe to re-run at any time — backs up existing config before overwriting.
 #
 # WHAT IT DOES:
 #   1. Dependency check     — lists missing tools with install commands
 #   2. Backup ~/.ctf_env    — saves to ~/.ctf_backups/ with timestamp
-#   3. Deploy ~/.ctf_env    — copies ctf-env-functions.sh into place
-#   4. Patch ~/.zshrc       — adds source line if not present
-#   5. Build CTF/           — platform directory tree
-#   6. Symlink all scripts  — everything in setup/ lands in /usr/local/bin/
-#   7. Run ctf-sync         — ensures repo is current
+#   3. Sync repo            — clones fresh or pulls latest (run_sync)
+#   4. Deploy ~/.ctf_env    — copies ctf-env-functions.sh into place
+#   5. Patch ~/.zshrc       — adds source line if not present
+#   6. Build CTF/           — platform directory tree
+#   7. Symlink all scripts  — everything in setup/ lands in /usr/local/bin/
 #
 # USAGE:
 #   ./ctf-install.sh              # auto-detect install location
@@ -749,8 +750,37 @@ run_sync() {
   local sync_flags=()
   $FORCE_PROD && sync_flags=("--prod")
 
+  # TEACHING NOTE — Integration fix: resolve ctf-sync.sh relative to this
+  # script's own directory as the primary fallback path.
+  #
+  # The previous fallback checked only $SETUP_DIR/ctf-sync.sh, which on a
+  # fresh machine is derived from REPO_DIR — the very directory that doesn't
+  # exist yet. Both `command -v ctf-sync` (not in PATH before symlinks are
+  # created) and `[[ -f $SETUP_DIR/ctf-sync.sh ]]` (directory doesn't exist)
+  # would fail, causing run_sync to print "ctf-sync not available" and skip
+  # entirely. The repo would never be cloned, and every subsequent step would
+  # fail silently against a REPO_DIR that doesn't exist.
+  #
+  # The fix: use ${0:A:h} to resolve the absolute directory containing this
+  # script. ctf-install.sh and ctf-sync.sh always live side by side in
+  # setup/. Whether the script is invoked as ./ctf-install.sh, via its
+  # /usr/local/bin symlink, or with a full path, ${0:A:h} always gives the
+  # real directory — making ctf-sync.sh locatable even on a fresh machine
+  # where SETUP_DIR hasn't been created yet.
+  #
+  # :A  = resolve to absolute path (following symlinks)
+  # :h  = head — strip filename, return directory component
+  #
+  # Detection order:
+  #   1. ctf-sync already in PATH (installed on a previous run)
+  #   2. ctf-sync.sh beside this script (fresh machine, pre-symlink)
+  #   3. ctf-sync.sh via SETUP_DIR (fallback for unusual invocation paths)
+  local script_dir="${0:A:h}"
+
   if command -v ctf-sync &>/dev/null; then
     ctf-sync "${sync_flags[@]}"
+  elif [[ -f "$script_dir/ctf-sync.sh" ]]; then
+    zsh "$script_dir/ctf-sync.sh" "${sync_flags[@]}"
   elif [[ -f "$SETUP_DIR/ctf-sync.sh" ]]; then
     zsh "$SETUP_DIR/ctf-sync.sh" "${sync_flags[@]}"
   else
@@ -876,10 +906,24 @@ fi
 #
 # Backup still runs before sync — we always preserve the existing ~/.ctf_env
 # before pulling potentially breaking changes and redeploying over it.
+#
+# TEACHING NOTE — Integration fix: load-bearing steps now propagate failure.
+#
+# run_sync and run_deploy_env are load-bearing: every step after them depends
+# on the repo existing and ~/.ctf_env being deployed. Without exit-on-failure,
+# a skipped sync or failed deploy would let the remaining steps run silently
+# against a repo that was never cloned — creating a partial install that
+# looks complete but isn't.
+#
+# run_dependency_check, run_patch_zshrc, run_build_directories, and
+# run_symlinks are non-critical or self-contained: a missing tool, an already-
+# patched zshrc, an existing directory, or a skipped symlink don't prevent
+# the rest of the install from producing a working state. They continue on
+# failure so a single non-fatal issue doesn't abort everything.
 run_dependency_check
 run_backup
-run_sync
-run_deploy_env
+run_sync       || { echo "${RED}[ERROR]${RESET} Sync step failed — aborting install."; exit 1; }
+run_deploy_env || { echo "${RED}[ERROR]${RESET} Deploy step failed — aborting install."; exit 1; }
 run_patch_zshrc
 run_build_directories
 run_symlinks
