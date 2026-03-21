@@ -174,6 +174,10 @@ fi
 # --prod bypasses all passes and assigns /opt/CTF_Public directly, with an
 # immediate existence check so a missing production install fails loudly.
 #
+# IMPORTANT — Keep this chain in sync with ctf-install.sh whenever either is
+# changed. The two scripts must always resolve INSTALL_DIR/REPO_DIR the same
+# way or they will silently target different directories on the same machine.
+#
 # TEACHING NOTE — Bug fix #A (continued): dev path and tilde expansion use
 # $_CTF_HOME rather than $HOME.
 #
@@ -658,10 +662,49 @@ done < <(find "$INSTALL_DIR" -type f -name "*.sh")
 
 echo "${GREEN}[OK]${RESET}    ${BOLD}${script_count}${RESET} script(s) set to executable."
 
-# --- Step 4: Summary ----------------------------------------------------------
+# --- Step 4: Deploy ~/.ctf_env ------------------------------------------------
+# TEACHING NOTE — Integration fix #4: ctf-sync now deploys ~/.ctf_env.
+#
+# Previously ctf-sync pulled the latest ctf-env-functions.sh into the repo
+# but never copied it to ~/.ctf_env — the file your shell actually sources.
+# This left a gap in the documented update workflow:
+#
+#   "To update a session command: edit ctf-env-functions.sh, push, run ctf-sync"
+#
+# That workflow was incomplete. After ctf-sync ran, the new code sat in the
+# repo unused. The user's live session commands were unchanged until they
+# either re-ran ctf-install or manually copied the file — neither of which
+# was mentioned anywhere in the output.
+#
+# The fix: deploy ~/.ctf_env here, immediately after the pull and chmod steps.
+# This mirrors what run_deploy_env does in ctf-install.sh, completing the
+# update cycle in a single ctf-sync call.
+#
+# The deploy is conditional: if CTF_ENV_SOURCE doesn't exist (e.g. the clone
+# failed, or the file was removed from the repo), we warn rather than error.
+# A failed deploy is not fatal to the sync — ownership and permissions were
+# already fixed. The user is told exactly what to do to resolve it manually.
+echo ""
+CTF_ENV_SOURCE="$INSTALL_DIR/setup/ctf-env-functions.sh"
+CTF_ENV_FILE="$_CTF_HOME/.ctf_env"
+
+echo "${CYAN}[DEPLOY]${RESET} Deploying ~/.ctf_env..."
+if [[ -f "$CTF_ENV_SOURCE" ]]; then
+  cp "$CTF_ENV_SOURCE" "$CTF_ENV_FILE" \
+    || { echo "${YELLOW}[WARN]${RESET}  Could not write ~/.ctf_env — copy manually:"; \
+         echo "         ${BOLD}cp ${CTF_ENV_SOURCE} ${CTF_ENV_FILE}${RESET}"; }
+  echo "${GREEN}[OK]${RESET}    Deployed: ${BOLD}${CTF_ENV_SOURCE}${RESET} → ${BOLD}${CTF_ENV_FILE}${RESET}"
+  echo "${CYAN}[INFO]${RESET}  Reload session commands: ${BOLD}source ~/.ctf_env${RESET}"
+else
+  echo "${YELLOW}[WARN]${RESET}  Source not found: ${BOLD}${CTF_ENV_SOURCE}${RESET}"
+  echo "         ~/.ctf_env was not updated. Check the repo state."
+fi
+
+# --- Step 5: Summary ----------------------------------------------------------
 echo ""
 echo "${BOLD}${CYAN}=== Sync Complete ===${RESET}"
 echo ""
 echo "  ${CYAN}Location:${RESET}  $INSTALL_DIR"
 echo "  ${CYAN}Owner:${RESET}     $REPO_OWNER"
 echo "  ${CYAN}Scripts:${RESET}   $script_count executable"
+echo "  ${CYAN}Env:${RESET}       $CTF_ENV_FILE"

@@ -3,10 +3,17 @@ title: Production Setup
 ---
 
 flowchart TD
-	%% Node Definitions
+	%% Node Definitions - Scripts
 	Node1@{ shape: rect, label: "ctf-env-functions.sh" }
 	Node2@{ shape: rect, label: "ctf-install.sh" }
 	Node3@{ shape: rect, label: "ctf-sync.sh" }
+
+    %% Node Definitions - Functions
+
+	%% Node Definitions - Variables
+
+	
+
 
 	%% Shape Guidelines
 	%% - Rectangles (rect) for scripts
@@ -24,10 +31,6 @@ flowchart TD
 
 
 
-
-	%% Connection Definitions
-	Node2 --- Node1
-	Node3 --> Node1 & Node2 & Node3
 
 	%% Subgraph - Script: ctf-env-functions.sh
 	subgraph ctf-env-functions.sh [ctf-env-functions.sh]
