@@ -497,8 +497,16 @@ run_backup() {
 
 
 # =============================================================================
-# STEP 3 — DEPLOY ~/.ctf_env
+# STEP 4 — DEPLOY ~/.ctf_env
 # =============================================================================
+# TEACHING NOTE — Section headers must match the entry point execution order.
+#
+# When run_sync was promoted to Step 3 (before run_deploy_env), the step
+# numbers on this function and all subsequent functions were not updated,
+# leaving both run_sync and run_deploy_env labelled "STEP 3". Section headers
+# are the authoritative reference for what order things run — a reader should
+# be able to trust them without cross-referencing the entry point call list.
+# The labels below now match the actual execution order exactly.
 run_deploy_env() {
   print_step "Deploying ~/.ctf_env"
 
@@ -539,7 +547,7 @@ run_deploy_env() {
 
 
 # =============================================================================
-# STEP 4 — PATCH ~/.zshrc
+# STEP 5 — PATCH ~/.zshrc
 # =============================================================================
 run_patch_zshrc() {
   print_step "Patching ~/.zshrc"
@@ -570,7 +578,7 @@ run_patch_zshrc() {
 
 
 # =============================================================================
-# STEP 5 — BUILD CTF DIRECTORY TREE
+# STEP 6 — BUILD CTF DIRECTORY TREE
 # =============================================================================
 # TEACHING NOTE — $use_sudo applied consistently; ownership fixed once at end.
 #
@@ -662,7 +670,7 @@ run_build_directories() {
 
 
 # =============================================================================
-# STEP 6 — SYMLINK ALL SCRIPTS IN setup/ TO /usr/local/bin/
+# STEP 7 — SYMLINK ALL SCRIPTS IN setup/ TO /usr/local/bin/
 # =============================================================================
 run_symlinks() {
   print_step "Symlinking Tools to /usr/local/bin/"
