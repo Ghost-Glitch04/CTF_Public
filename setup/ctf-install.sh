@@ -165,11 +165,30 @@ fi
 # =============================================================================
 # TEACHING NOTE — --prod short-circuits auto-detection.
 #
-# The detection chain is identical to ctf-sync.sh. Keeping the same logic
+# The detection chain mirrors ctf-sync.sh exactly. Keeping identical logic
 # in both files means they always agree on which directory is authoritative.
 # The --prod flag bypasses all detection and hard-codes the production path,
 # with an immediate existence check so a misconfigured --prod fails loudly
 # rather than proceeding with a broken REPO_DIR.
+#
+# IMPORTANT — Keep this chain in sync with ctf-sync.sh whenever either is
+# changed. The two scripts must always resolve REPO_DIR/INSTALL_DIR the same
+# way or they will silently target different directories on the same machine.
+#
+# Detection order (without --prod):
+#   Pass 1: $CTF_REPO_DIR already exported in the environment
+#   Pass 2: $_CTF_HOME/github/CTF_Public exists on disk (dev path)
+#   Pass 3: /opt/CTF_Public exists on disk (production path)
+#   Pass 4: fall back to /opt/CTF_Public as the default clone target
+#
+# TEACHING NOTE — Integration fix #1: added Pass 3.
+#
+# The previous version jumped straight from Pass 2 to an unconditional else
+# that assigned /opt/CTF_Public without checking whether that path actually
+# exists. ctf-sync.sh has always had a Pass 3 existence check here. The
+# missing pass meant the two chains were documented as identical but weren't,
+# creating a maintenance trap: anyone updating one script had no signal they
+# needed to update the other. Pass 3 is now present in both.
 # =============================================================================
 
 if $FORCE_PROD; then
@@ -186,7 +205,11 @@ elif [[ -n "$CTF_REPO_DIR" ]]; then
   REPO_DIR="$CTF_REPO_DIR"
 elif [[ -d "$_CTF_HOME/github/CTF_Public" ]]; then
   REPO_DIR="$_CTF_HOME/github/CTF_Public"
+elif [[ -d "/opt/CTF_Public" ]]; then
+  REPO_DIR="/opt/CTF_Public"
 else
+  # No repo found anywhere — set the default target for cloning.
+  # run_sync (Step 7, now Step 1 — see integration fix #2) will clone it.
   REPO_DIR="/opt/CTF_Public"
 fi
 
@@ -209,27 +232,63 @@ ZSHRC="$_CTF_HOME/.zshrc"
 SYMLINK_DIR="/usr/local/bin"
 SETUP_DIR="$REPO_DIR/setup"
 
-# Load KNOWN_PLATFORMS from the env functions file — it is the authority
-if [[ ! -f "$CTF_ENV_SOURCE" ]]; then
-  echo "\033[0;31m[ERROR]\033[0m ctf-env-functions.sh not found at: $CTF_ENV_SOURCE"
-  echo "        Is the repo cloned to $REPO_DIR?"
-  echo "        Run: git clone https://github.com/Ghost-Glitch04/CTF_Public $REPO_DIR"
-  exit 1
-fi
-
-# Source only to read KNOWN_PLATFORMS — a subshell keeps our namespace clean
-# TEACHING NOTE — The ( ) creates a subshell. Variables set inside it don't
-# leak into the parent script. We only want KNOWN_PLATFORMS; sourcing the full
-# file in the main shell would load all the CTF functions into the installer's
-# namespace, which is messy. The subshell isolates the import cleanly.
+# Load KNOWN_PLATFORMS from the env functions file — it is the authority.
+# TEACHING NOTE — Integration fix #3: soft handling for fresh machines.
 #
-# Word splitting note: reading line-by-line with a while/read loop preserves
-# entries that contain spaces (e.g. "HTB:Hack The Box") intact. mapfile is
-# bash-only, so we use this portable approach for zsh.
-KNOWN_PLATFORMS=()
-while IFS= read -r entry; do
-  [[ -n "$entry" ]] && KNOWN_PLATFORMS+=("$entry")
-done < <( source "$CTF_ENV_SOURCE" 2>/dev/null; printf '%s\n' "${KNOWN_PLATFORMS[@]}" )
+# The previous version hard-exited here if CTF_ENV_SOURCE did not exist:
+#   if [[ ! -f "$CTF_ENV_SOURCE" ]]; then ... exit 1; fi
+#
+# This created a chicken-and-egg problem on a genuinely fresh machine:
+#   1. Path resolution sets REPO_DIR=/opt/CTF_Public (nothing exists yet)
+#   2. CTF_ENV_SOURCE = /opt/CTF_Public/setup/ctf-env-functions.sh
+#   3. That file doesn't exist because the repo hasn't been cloned yet
+#   4. Script exits with an error — before run_sync can clone the repo
+#
+# The fix moves the hard existence check inside run_deploy_env (where it
+# belongs — that step actually needs the file) and replaces it here with
+# a soft fallback: if CTF_ENV_SOURCE is not available, KNOWN_PLATFORMS is
+# initialised to a safe built-in default. run_build_directories will still
+# create the correct platform directories on this run, and on the next run
+# (after run_sync has cloned the repo) the live file will be used.
+#
+# This means a fresh-machine install proceeds as:
+#   run_sync      → clones the repo (CTF_ENV_SOURCE now exists)
+#   run_deploy_env → deploys ~/.ctf_env from the just-cloned file
+#   run_build_directories → uses KNOWN_PLATFORMS (from file or fallback)
+#
+# The fallback list mirrors KNOWN_PLATFORMS in ctf-env-functions.sh.
+# If they drift, the only consequence is that platform directories created
+# on the very first install may differ from a re-run — a minor cosmetic
+# issue corrected automatically when ctf-install is re-run after cloning.
+if [[ -f "$CTF_ENV_SOURCE" ]]; then
+  # Source only to read KNOWN_PLATFORMS — a subshell keeps our namespace clean.
+  # TEACHING NOTE — The ( ) creates a subshell. Variables set inside it don't
+  # leak into the parent script. We only want KNOWN_PLATFORMS; sourcing the full
+  # file in the main shell would load all the CTF functions into the installer's
+  # namespace, which is messy. The subshell isolates the import cleanly.
+  #
+  # Word splitting note: reading line-by-line with a while/read loop preserves
+  # entries that contain spaces (e.g. "HTB:Hack The Box") intact. mapfile is
+  # bash-only, so we use this portable approach for zsh.
+  KNOWN_PLATFORMS=()
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] && KNOWN_PLATFORMS+=("$entry")
+  done < <( source "$CTF_ENV_SOURCE" 2>/dev/null; printf '%s\n' "${KNOWN_PLATFORMS[@]}" )
+else
+  # Repo not yet cloned — use built-in fallback matching ctf-env-functions.sh.
+  # run_sync will clone the repo; re-running ctf-install afterwards will use
+  # the live file. This fallback ensures the first-run install completes fully.
+  print_warn "Repo not yet cloned — using built-in platform defaults for this run."
+  print_info "Re-run ctf-install after cloning to use the live platform list."
+  KNOWN_PLATFORMS=(
+    "HTB:Hack The Box"
+    "THM:TryHackMe"
+    "LD:LetsDefend"
+    "DC:DefCon"
+    "GGL:Google CTF"
+    "PG:Proving Grounds"
+  )
+fi
 
 # --- Required tools -----------------------------------------------------------
 # FORMAT: "command:display_name:apt_package:version_field"
@@ -436,8 +495,24 @@ run_backup() {
 run_deploy_env() {
   print_step "Deploying ~/.ctf_env"
 
+  # TEACHING NOTE — Integration fix #2 + #3 (continued): hard check lives here.
+  #
+  # The startup-time hard exit on missing CTF_ENV_SOURCE was moved to a soft
+  # fallback (see path resolution block). The hard check now lives here, where
+  # it is actually meaningful: run_sync has already run, so if the source file
+  # still doesn't exist at this point it is a genuine error (clone failed,
+  # wrong REPO_DIR, file deleted from repo) rather than a "not cloned yet"
+  # first-run condition.
+  #
+  # Re-derive CTF_ENV_SOURCE here rather than relying on the value set at
+  # script startup. On a fresh machine the startup value was set before the
+  # repo existed; after run_sync the repo now exists and the path is valid.
+  # Re-deriving ensures we always deploy from the freshest pulled version.
+  CTF_ENV_SOURCE="$REPO_DIR/setup/ctf-env-functions.sh"
+
   if [[ ! -f "$CTF_ENV_SOURCE" ]]; then
     print_err "Source file not found: ${BOLD}${CTF_ENV_SOURCE}${RESET}"
+    print_info "run_sync should have cloned the repo — check for errors above."
     print_info "Ensure ctf-env-functions.sh exists in ${BOLD}${SETUP_DIR}${RESET}"
     return 1
   fi
@@ -771,20 +846,51 @@ if ! $SKIP_CONFIRM; then
 fi
 
 # --- Run all steps ------------------------------------------------------------
+# TEACHING NOTE — Integration fix #2 + #3: run_sync moved to before
+# run_deploy_env.
+#
+# Previous order: dependency check → backup → deploy → patch → build → symlink → sync
+# New order:      dependency check → backup → sync → deploy → patch → build → symlink
+#
+# Two problems this fixes:
+#
+# Fix #2 (deploy-before-pull on re-runs):
+#   When ctf-install is re-run to pick up changes, the old order deployed
+#   ~/.ctf_env from the pre-pull version of ctf-env-functions.sh, then pulled
+#   the updated version into the repo. The result: ~/.ctf_env was always one
+#   version behind after a re-run. Moving sync before deploy ensures the file
+#   that gets deployed is always the freshest available version.
+#
+# Fix #3 (fresh machine hard-fail):
+#   On a machine with no repo, path resolution sets REPO_DIR=/opt/CTF_Public
+#   but that directory doesn't exist yet. The old order tried to load
+#   KNOWN_PLATFORMS from the repo (at script startup, before any functions
+#   run), then deployed, patched, built dirs, symlinked — all before run_sync
+#   could clone the repo. The hard exit on missing CTF_ENV_SOURCE blocked
+#   fresh installs entirely.
+#
+#   With sync running first (step 3 below), the repo is cloned before any
+#   step that depends on it. The KNOWN_PLATFORMS load at startup now falls
+#   back gracefully if the repo isn't present (see integration fix #3 in the
+#   path resolution block), and on the very next step the repo exists.
+#
+# Backup still runs before sync — we always preserve the existing ~/.ctf_env
+# before pulling potentially breaking changes and redeploying over it.
 run_dependency_check
 run_backup
+run_sync
 run_deploy_env
 run_patch_zshrc
 run_build_directories
 run_symlinks
-run_sync
 
 # --- Done ---------------------------------------------------------------------
 echo ""
 echo "${BOLD}${GREEN}=== Installation Complete ===${RESET}"
 echo ""
 echo "  ${CYAN}Reload your shell:${RESET}"
-echo "  ${BOLD}source ~/.zshrc${RESET}"
+echo "  ${BOLD}source ~/.zshrc${RESET}           ${DIM}# first install — loads everything fresh${RESET}"
+echo "  ${BOLD}source ~/.ctf_env${RESET}          ${DIM}# re-run — picks up the newly deployed env${RESET}"
 echo ""
 echo "  ${CYAN}Start a CTF session:${RESET}"
 echo "  ${BOLD}set-platform <platform>${RESET}"
