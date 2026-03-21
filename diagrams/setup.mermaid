@@ -8,6 +8,23 @@ flowchart TD
 	Node2@{ shape: rect, label: "ctf-install.sh" }
 	Node3@{ shape: rect, label: "ctf-sync.sh" }
 
+	%% Shape Guidelines
+	%% - Rectangles (rect) for scripts
+	%% - Line-Rect (lin-rect) for functions
+	%% - Bow-Rectangles (bow-rect0) for script level variables
+	%% - Curved Trapezoid (curve-trap) for function level variables
+	%% - Parallelograms (parallelogram) for inputs/outputs
+	%% - Cylinders (cylinder) for databases/storage
+	%% - Hexagons (hexagon) for processes/operations
+	%% - Diamonds (diamond) for decision points
+	%% - Ovals (oval) for start points
+	%% - Double Circle (doublecircle) for end points
+    %% - Doc (doc) for file names
+	%% - Stadium (Stadium) for start points.
+
+
+
+
 	%% Connection Definitions
 	Node2 --- Node1
 	Node3 --> Node1 & Node2 & Node3

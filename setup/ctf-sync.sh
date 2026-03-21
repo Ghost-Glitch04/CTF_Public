@@ -29,7 +29,6 @@
 
 # --- Configuration ------------------------------------------------------------
 REPO_URL="https://github.com/Ghost-Glitch04/CTF_Public"
-REPO_OWNER="$USER"
 
 # --- Colors -------------------------------------------------------------------
 RED='\033[0;31m'
@@ -39,6 +38,48 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 DIM='\033[2m'
 RESET='\033[0m'
+
+# =============================================================================
+# SUDO-AWARE USER RESOLUTION
+# =============================================================================
+# TEACHING NOTE — Bug fix #A: resolve the real invoking user before any paths.
+#
+# ctf-sync.sh runs sudo git clone, sudo chown, and sudo chmod for /opt/*
+# paths — meaning it is explicitly designed to be invoked with sudo for
+# production installs. Under sudo, both $HOME and $USER are set to root's
+# values (/root and "root" respectively). Any path or identity built from
+# them then points at root rather than the invoking user:
+#
+#   REPO_OWNER="$USER"              → "root"  — chown silently gives ownership
+#                                                to root instead of the user
+#   $HOME/github/CTF_Public         → /root/github/CTF_Public — dev path check
+#                                                misses the real repo
+#   ${custom_dir/#\~/$HOME}         → tilde expands to /root/ in path prompt
+#   "$INSTALL_DIR" == "$HOME"*      → mode label always shows "production"
+#
+# The fix is identical to ctf-install.sh and ctf-env-functions.sh: resolve
+# the real user's home and username once at the top, into _CTF_HOME and
+# REAL_USER, then use those throughout instead of $HOME and $USER.
+#
+# getent passwd is used rather than `eval echo ~$SUDO_USER` because it reads
+# directly from the system user database and does not depend on shell
+# expansion or the sudoers environment configuration.
+#
+# REPO_OWNER replaces the previous bare $USER assignment. It is kept as a
+# named variable (rather than using REAL_USER directly) because it documents
+# intent at the point of use — "the user who should own the repo files" is
+# clearer than "the real user" in ownership contexts.
+# =============================================================================
+
+if [[ -n "$SUDO_USER" ]]; then
+  _CTF_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+  REAL_USER="$SUDO_USER"
+else
+  _CTF_HOME="$HOME"
+  REAL_USER="$USER"
+fi
+
+REPO_OWNER="$REAL_USER"
 
 # =============================================================================
 # ARGUMENT PARSING
@@ -132,6 +173,14 @@ fi
 #
 # --prod bypasses all passes and assigns /opt/CTF_Public directly, with an
 # immediate existence check so a missing production install fails loudly.
+#
+# TEACHING NOTE — Bug fix #A (continued): dev path and tilde expansion use
+# $_CTF_HOME rather than $HOME.
+#
+# Pass 2 checks $_CTF_HOME/github/CTF_Public so it finds the real user's dev
+# repo even when the script is run under sudo. The tilde expansion in Pass 4
+# also substitutes $_CTF_HOME so a user typing ~/github/CTF_Public at the
+# prompt gets the correct path expanded rather than /root/github/CTF_Public.
 # =============================================================================
 
 if $FORCE_PROD; then
@@ -146,8 +195,8 @@ if $FORCE_PROD; then
   fi
 elif [[ -n "$CTF_REPO_DIR" ]]; then
   INSTALL_DIR="$CTF_REPO_DIR"
-elif [[ -d "$HOME/github/CTF_Public" ]]; then
-  INSTALL_DIR="$HOME/github/CTF_Public"
+elif [[ -d "$_CTF_HOME/github/CTF_Public" ]]; then
+  INSTALL_DIR="$_CTF_HOME/github/CTF_Public"
 elif [[ -d "/opt/CTF_Public" ]]; then
   INSTALL_DIR="/opt/CTF_Public"
 else
@@ -155,15 +204,26 @@ else
   # We only reach this branch when no repo exists anywhere on disk and
   # --prod was not passed. Empty input accepts the production default.
   #
+  # TEACHING NOTE — Bug fix #A (continued) + Bug fix #C: tilde expansion
+  # and read -r.
+  #
   # Tilde expansion: the `read` builtin stores input as a literal string.
-  # The ${var/#\~/$HOME} substitution replaces a leading ~ with $HOME.
+  # The ${var/#\~/$_CTF_HOME} substitution replaces a leading ~ with the
+  # real user's home directory. The previous version used $HOME here, which
+  # would expand to /root under sudo — meaning a user typing ~/github/CTF_Public
+  # would silently get /root/github/CTF_Public as the install path instead of
+  # their own home directory.
+  #
+  # read -r: without -r, a backslash in the typed path is treated as a line-
+  # continuation escape rather than a literal character. A path containing \\
+  # would be silently mangled. With -r, input is read exactly as typed.
   echo ""
   echo "${CYAN}[SETUP]${RESET}  No existing repo found. Where should it be cloned?"
   echo "         ${DIM}Production default: /opt/CTF_Public${RESET}"
   echo "         ${DIM}Dev example:        ~/github/CTF_Public${RESET}"
-  echo -n "         Install path [/opt/CTF_Public]: "
-  read custom_dir
-  custom_dir="${custom_dir/#\~/$HOME}"
+  printf "         Install path [/opt/CTF_Public]: "
+  read -r custom_dir
+  custom_dir="${custom_dir/#\~/$_CTF_HOME}"
   INSTALL_DIR="${custom_dir:-/opt/CTF_Public}"
 fi
 
@@ -173,9 +233,16 @@ echo "${BOLD}${CYAN}=== CTF Repo CTF Sync ===${RESET}"
 echo "${DIM}  Repo:   $REPO_URL${RESET}"
 echo "${DIM}  Target: $INSTALL_DIR${RESET}"
 
+# TEACHING NOTE — Bug fix #A (continued): mode label uses $_CTF_HOME.
+#
+# The previous check compared $INSTALL_DIR against $HOME* to decide whether
+# to label the mode "dev" or "production". Under sudo, $HOME is /root, so a
+# dev repo at /home/talos/github/CTF_Public would never match /root* and
+# would be incorrectly labelled "production". $_CTF_HOME holds the invoking
+# user's real home directory regardless of sudo context.
 if $FORCE_PROD; then
   echo "${YELLOW}  Mode:   production (--prod)${RESET}"
-elif [[ "$INSTALL_DIR" == "$HOME"* ]]; then
+elif [[ "$INSTALL_DIR" == "$_CTF_HOME"* ]]; then
   echo "${DIM}  Mode:   dev (auto-detected)${RESET}"
 else
   echo "${DIM}  Mode:   production (auto-detected)${RESET}"
@@ -236,7 +303,7 @@ if [[ -d "${INSTALL_DIR}/.git" ]]; then
     #
     # Each filename is indented by a tab character on its own line. We parse
     # them using grep to isolate lines that start with whitespace (the filename
-    # lines), then awk to strip the leading whitespace and print just the path.
+    # lines), then sed to strip the leading whitespace and print just the path.
     # The result is a clean array of affected file paths.
     #
     # We check specifically for this known failure pattern before offering
@@ -304,8 +371,11 @@ if [[ -d "${INSTALL_DIR}/.git" ]]; then
       echo "  If you have intentional edits in these files, answer N and"
       echo "  resolve them manually before re-running ${BOLD}ctf-sync${RESET}."
       echo ""
-      echo -n "${YELLOW}  Overwrite all conflicting local changes with remote? [y/N]:${RESET} "
-      read recovery_confirm
+      # TEACHING NOTE — Bug fix #C (continued): printf replaces echo -n,
+      # and read -r is added. See the full explanation in the install dir
+      # resolution block above — the same two fixes apply here.
+      printf "${YELLOW}  Overwrite all conflicting local changes with remote? [y/N]:${RESET} "
+      read -r recovery_confirm
 
       if [[ "$recovery_confirm" == [yY] ]]; then
         echo ""
@@ -421,13 +491,63 @@ else
   echo "${CYAN}[CLONE]${RESET} No local repo found. Cloning fresh copy..."
   echo ""
 
+  # TEACHING NOTE — Bug fix #B: CLONE_EXIT is now captured inside each branch,
+  # and mkdir failure is caught before git clone runs.
+  #
+  # The previous version was:
+  #
+  #   if [[ "$INSTALL_DIR" == /opt/* ]]; then
+  #     sudo git clone "$REPO_URL" "$INSTALL_DIR" 2>&1
+  #   else
+  #     mkdir -p "$(dirname "$INSTALL_DIR")"
+  #     git clone "$REPO_URL" "$INSTALL_DIR" 2>&1
+  #   fi
+  #   CLONE_EXIT=$?
+  #
+  # Two problems:
+  #
+  # 1. CLONE_EXIT after fi captures the exit code of fi itself (which in zsh
+  #    reflects the last command inside the block). In the /opt/* branch that
+  #    happens to be git clone — but only because nothing else runs after it.
+  #    Any future edit inserting a line inside the if block before fi would
+  #    silently break error detection. Capturing $? immediately inside each
+  #    branch is the only safe pattern (same principle as the chown fix
+  #    already documented below).
+  #
+  # 2. In the dev branch, mkdir -p ran immediately before git clone with no
+  #    error check. If mkdir failed (permissions, invalid path), git clone
+  #    would never run — but CLONE_EXIT would capture mkdir's failure code and
+  #    report it as a git clone failure, giving a misleading error message and
+  #    diagnostics that point the user at the wrong problem.
+  #
+  # The fix:
+  #   - Capture CLONE_EXIT on the line immediately after each git clone call.
+  #   - Add an explicit mkdir failure check with a clear error message before
+  #     git clone runs in the dev branch.
+  #
+  # TEACHING NOTE — Bug fix #D: removed 2>&1 from git clone calls.
+  #
+  # The previous version had `sudo git clone "$REPO_URL" "$INSTALL_DIR" 2>&1`
+  # and `git clone "$REPO_URL" "$INSTALL_DIR" 2>&1`. Unlike the pull block
+  # where output is captured into PULL_OUTPUT=$(...), these clone calls do NOT
+  # capture output into a variable — the 2>&1 just redirects stderr to stdout
+  # and lets both streams flow to the terminal unchanged.
+  #
+  # This is misleading: it implies the output is being handled or suppressed
+  # when it isn't. It also means git's stderr (progress, errors) gets mixed
+  # into stdout, which can confuse downstream tools that consume this script's
+  # output. Removing 2>&1 lets git write stdout and stderr to their natural
+  # destinations — progress output appears normally in the terminal, and
+  # errors remain on stderr where they belong.
   if [[ "$INSTALL_DIR" == /opt/* ]]; then
-    sudo git clone "$REPO_URL" "$INSTALL_DIR" 2>&1
+    sudo git clone "$REPO_URL" "$INSTALL_DIR"
+    CLONE_EXIT=$?
   else
-    mkdir -p "$(dirname "$INSTALL_DIR")"
-    git clone "$REPO_URL" "$INSTALL_DIR" 2>&1
+    mkdir -p "$(dirname "$INSTALL_DIR")" \
+      || { echo "${RED}[ERROR]${RESET} Could not create parent directory: $(dirname "$INSTALL_DIR")"; exit 1; }
+    git clone "$REPO_URL" "$INSTALL_DIR"
+    CLONE_EXIT=$?
   fi
-  CLONE_EXIT=$?
 
   if [[ $CLONE_EXIT -ne 0 ]]; then
     echo ""
@@ -470,6 +590,12 @@ fi
 echo ""
 echo "${CYAN}[PERMS]${RESET} Setting ownership to: ${BOLD}${REPO_OWNER}${RESET}"
 
+# TEACHING NOTE — Bug fix #A (continued): chown uses REPO_OWNER, not $USER.
+#
+# REPO_OWNER was set to REAL_USER at the top of the script. Under sudo,
+# $USER is "root" — using it here would transfer ownership of the entire
+# repo to root, defeating the purpose of the chown. REPO_OWNER always
+# holds the invoking user's name regardless of sudo context.
 if [[ "$INSTALL_DIR" == /opt/* ]]; then
   sudo chown -R "${REPO_OWNER}":"${REPO_OWNER}" "$INSTALL_DIR"
 else
