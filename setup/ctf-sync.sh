@@ -690,11 +690,30 @@ CTF_ENV_FILE="$_CTF_HOME/.ctf_env"
 
 echo "${CYAN}[DEPLOY]${RESET} Deploying ~/.ctf_env..."
 if [[ -f "$CTF_ENV_SOURCE" ]]; then
-  cp "$CTF_ENV_SOURCE" "$CTF_ENV_FILE" \
+  # TEACHING NOTE — Integration fix: gate success messages on a deploy flag.
+  #
+  # The previous version used:
+  #   cp ... || { echo warn; }
+  #   echo [OK]     ← always fired, even when cp failed
+  #   echo [INFO]   ← always fired, even when cp failed
+  #
+  # The || block catches the cp failure and prints a warning, but the shell
+  # then continues to the next lines unconditionally — so a failed deploy
+  # would print both [WARN] Could not write and [OK] Deployed, giving the
+  # user contradictory output that misrepresents the actual state.
+  #
+  # The fix: set a boolean flag inside the && success branch, then gate the
+  # [OK] and [INFO] messages on that flag. If cp fails, the flag stays false
+  # and only the warning prints. If cp succeeds, only the success messages
+  # print. The two states are now mutually exclusive.
+  local deploy_ok=false
+  cp "$CTF_ENV_SOURCE" "$CTF_ENV_FILE" && deploy_ok=true \
     || { echo "${YELLOW}[WARN]${RESET}  Could not write ~/.ctf_env — copy manually:"; \
          echo "         ${BOLD}cp ${CTF_ENV_SOURCE} ${CTF_ENV_FILE}${RESET}"; }
-  echo "${GREEN}[OK]${RESET}    Deployed: ${BOLD}${CTF_ENV_SOURCE}${RESET} → ${BOLD}${CTF_ENV_FILE}${RESET}"
-  echo "${CYAN}[INFO]${RESET}  Reload session commands: ${BOLD}source ~/.ctf_env${RESET}"
+  if $deploy_ok; then
+    echo "${GREEN}[OK]${RESET}    Deployed: ${BOLD}${CTF_ENV_SOURCE}${RESET} → ${BOLD}${CTF_ENV_FILE}${RESET}"
+    echo "${CYAN}[INFO]${RESET}  Reload session commands: ${BOLD}source ~/.ctf_env${RESET}"
+  fi
 else
   echo "${YELLOW}[WARN]${RESET}  Source not found: ${BOLD}${CTF_ENV_SOURCE}${RESET}"
   echo "         ~/.ctf_env was not updated. Check the repo state."
