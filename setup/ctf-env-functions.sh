@@ -69,6 +69,13 @@
 # The fix: resolve the real user's home once, at the top, into _CTF_HOME.
 # Every path in this file is built from $_CTF_HOME instead of $HOME.
 #
+# REAL_USER is resolved alongside _CTF_HOME for use in chown calls within
+# set-box. Under sudo, $USER is "root" — using it in a chown would transfer
+# workspace ownership to root rather than the invoking user, immediately
+# making the workspace unwritable. REAL_USER holds the invoking user's name
+# regardless of sudo context, matching the pattern already used in
+# ctf-install.sh and ctf-sync.sh.
+#
 # How it works:
 #   1. If $SUDO_USER is set, the script is running under sudo. We use
 #      `getent passwd` to look up that user's home directory from the system
@@ -84,8 +91,10 @@
 
 if [[ -n "$SUDO_USER" ]]; then
   _CTF_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+  REAL_USER="$SUDO_USER"
 else
   _CTF_HOME="$HOME"
+  REAL_USER="$USER"
 fi
 
 # =============================================================================
@@ -752,8 +761,17 @@ set-box() {
     # created here at runtime — after install — so they also need an explicit
     # chown. The recursive flag covers BOX_DIR and all its subdirs in one call,
     # matching the same pattern used in ctf-install.sh's run_build_directories.
+    #
+    # TEACHING NOTE — Integration fix: chown uses REAL_USER, not $USER.
+    #
+    # Under sudo, $USER is set to "root". Using $USER here would transfer
+    # ownership of the entire workspace to root — the user would immediately
+    # find they cannot write to their own scans/, notes/, or flags/ folders.
+    # REAL_USER is resolved at the top of this file alongside _CTF_HOME and
+    # holds the invoking user's name regardless of sudo context, matching the
+    # same pattern used in ctf-install.sh and ctf-sync.sh.
     if $use_sudo; then
-      sudo chown -R "${USER}:${USER}" "$BOX_DIR"
+      sudo chown -R "${REAL_USER}:${REAL_USER}" "$BOX_DIR"
     fi
 
     _ctf_ok "Created workspace: ${_CTF_BOLD}${BOX_DIR}${_CTF_RESET}"
