@@ -118,8 +118,50 @@ for arg in "$@"; do
   esac
 done
 
+
 # =============================================================================
-# SECTION 2 — PATH RESOLUTION
+# SECTION 2 — SUDO-AWARE USER RESOLUTION
+# =============================================================================
+# TEACHING NOTE — Bug fix #A: resolve the real invoking user before any paths.
+#
+# This installer is designed to be run with sudo for production installs —
+# sudo mkdir, sudo chown, and sudo ln -sf all appear below. When a script
+# runs under sudo, the shell sets $HOME to /root (the root user's home
+# directory). Any path built from $HOME then points into root's home instead
+# of the invoking user's — meaning:
+#
+#   CTF_ENV_FILE  → /root/.ctf_env        (wrong user's env file)
+#   BACKUP_DIR    → /root/.ctf_backups    (wrong user's backups)
+#   ZSHRC         → /root/.zshrc          (wrong user's shell config)
+#
+# The fix mirrors ctf-env-functions.sh: resolve the real user's home once,
+# at the top, into _CTF_HOME. Every user-relative path in the file is built
+# from $_CTF_HOME rather than $HOME.
+#
+# How it works:
+#   1. If $SUDO_USER is set, the script is running under sudo. We use
+#      `getent passwd` to look up that user's home directory from the system
+#      user database — more reliable than `eval echo ~$SUDO_USER` because it
+#      does not depend on shell expansion or the sudoers environment config.
+#   2. If $SUDO_USER is not set, we are running as the normal user and $HOME
+#      is already correct. Fall back to it directly.
+#
+# REAL_USER is also resolved here for use in chown calls — $USER becomes
+# "root" under sudo, just like $HOME, so ownership assignment must also use
+# the invoking user's name rather than the elevated one.
+# =============================================================================
+
+if [[ -n "$SUDO_USER" ]]; then
+  _CTF_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
+  REAL_USER="$SUDO_USER"
+else
+  _CTF_HOME="$HOME"
+  REAL_USER="$USER"
+fi
+
+
+# =============================================================================
+# SECTION 3 — PATH RESOLUTION
 # =============================================================================
 # TEACHING NOTE — --prod short-circuits auto-detection.
 #
@@ -142,8 +184,8 @@ if $FORCE_PROD; then
   fi
 elif [[ -n "$CTF_REPO_DIR" ]]; then
   REPO_DIR="$CTF_REPO_DIR"
-elif [[ -d "$HOME/github/CTF_Public" ]]; then
-  REPO_DIR="$HOME/github/CTF_Public"
+elif [[ -d "$_CTF_HOME/github/CTF_Public" ]]; then
+  REPO_DIR="$_CTF_HOME/github/CTF_Public"
 else
   REPO_DIR="/opt/CTF_Public"
 fi
@@ -155,11 +197,15 @@ fi
 # otherwise it falls back to the standard production workspace path.
 CTF_BASE="${CTF_BASE_DIR:-/opt/CTF}"
 
-# --- Derived paths (all relative to REPO_DIR — never need editing) ------------
-CTF_ENV_FILE="$HOME/.ctf_env"
+# --- Derived paths (all relative to _CTF_HOME — never need editing) -----------
+# TEACHING NOTE — All user-relative paths are now built from $_CTF_HOME, not
+# $HOME. This ensures they resolve to the invoking user's directories even
+# when the script is run under sudo. REPO_DIR and CTF_BASE are system paths
+# (/opt/*) and are not affected by the sudo context.
+CTF_ENV_FILE="$_CTF_HOME/.ctf_env"
 CTF_ENV_SOURCE="$REPO_DIR/setup/ctf-env-functions.sh"
-BACKUP_DIR="$HOME/.ctf_backups"
-ZSHRC="$HOME/.zshrc"
+BACKUP_DIR="$_CTF_HOME/.ctf_backups"
+ZSHRC="$_CTF_HOME/.zshrc"
 SYMLINK_DIR="/usr/local/bin"
 SETUP_DIR="$REPO_DIR/setup"
 
@@ -276,7 +322,20 @@ run_dependency_check() {
     if command -v "$cmd" &>/dev/null; then
       local vflag="--version"
       [[ "$cmd" == "nmap" ]] && vflag="-V"
-      local version=$(${cmd} ${vflag} 2>/dev/null | head -1 | awk -v f="$vfield" '{print $f}' | tr -d '(),')
+      # TEACHING NOTE — Bug fix #B: split `local version=$(...)` into two lines.
+      #
+      # In zsh, `local` is itself a command. When you write:
+      #   local version=$(some_command)
+      # ...the exit code captured in $? is local's exit code (always 0), not
+      # the command substitution's. A failed version command is silently
+      # swallowed and the variable is set to an empty string with no error.
+      #
+      # The fix is to declare the variable first, then assign on a separate
+      # line. After the assignment, $? reflects the pipeline's actual exit
+      # code. This is the same "$? capture is fragile after local" principle
+      # noted in the project's key learnings.
+      local version
+      version=$(${cmd} ${vflag} 2>/dev/null | head -1 | awk -v f="$vfield" '{print $f}' | tr -d '(),')
       print_ok "${name} ${DIM}(${version})${RESET}"
     else
       print_warn "${name} ${DIM}— not found${RESET}"
@@ -328,7 +387,8 @@ run_backup() {
   fi
 
   if [[ ! -d "$BACKUP_DIR" ]]; then
-    mkdir -p "$BACKUP_DIR"
+    mkdir -p "$BACKUP_DIR" \
+      || { print_err "Could not create backup directory: ${BOLD}${BACKUP_DIR}${RESET}"; return 1; }
     print_ok "Created backup directory: ${BOLD}${BACKUP_DIR}${RESET}"
   fi
 
@@ -336,11 +396,33 @@ run_backup() {
   timestamp=$(date +"%Y%m%d_%H%M%S")
   local backup_file="${BACKUP_DIR}/.ctf_env.${timestamp}"
 
-  cp "$CTF_ENV_FILE" "$backup_file"
+  # TEACHING NOTE — Bug fix #C: cp failure is now caught and surfaced.
+  #
+  # Previously, a failed cp (disk full, permissions issue) would print nothing
+  # and the function would continue — the installer would proceed to deploy a
+  # fresh ~/.ctf_env without having successfully saved the old one. The user
+  # would lose their existing config with no warning.
+  #
+  # The fix uses || { print_err ...; return 1; } to abort immediately on
+  # failure. This is the same error-surfacing pattern applied throughout the
+  # toolkit: never let a silent failure propagate.
+  cp "$CTF_ENV_FILE" "$backup_file" \
+    || { print_err "Backup failed — could not write: ${BOLD}${backup_file}${RESET}"; return 1; }
   print_ok "Backed up to: ${BOLD}${backup_file}${RESET}"
 
-  local backup_count
-  backup_count=$(ls "$BACKUP_DIR"/.ctf_env.* 2>/dev/null | wc -l | tr -d ' ')
+  # TEACHING NOTE — Bug fix #D: replaced `ls | wc -l` with a zsh glob array.
+  #
+  # `ls` is a tool for humans, not scripts. Its output format is not guaranteed
+  # to be stable, and filenames containing newlines would cause wc -l to
+  # overcount. The zsh-native approach is to expand the glob into an array and
+  # count its elements directly — no subprocess, no parsing, no edge cases.
+  #
+  # The (N) glob qualifier tells zsh to return an empty array instead of an
+  # error when no files match (equivalent to nullglob in bash). Without it,
+  # an unmatched glob would expand to the literal pattern string and the count
+  # would be 1 instead of 0.
+  local backups=("$BACKUP_DIR"/.ctf_env.*(N))
+  local backup_count=${#backups}
   if (( backup_count > 5 )); then
     print_info "${backup_count} backups in ${BACKUP_DIR}"
     print_info "To clean old backups: ${BOLD}ls ~/.ctf_backups/${RESET} then remove as needed"
@@ -360,7 +442,14 @@ run_deploy_env() {
     return 1
   fi
 
-  cp "$CTF_ENV_SOURCE" "$CTF_ENV_FILE"
+  # TEACHING NOTE — Bug fix #C (continued): cp failure caught here too.
+  #
+  # If the deploy cp fails (permissions, disk full, source vanished between
+  # the existence check above and the copy here), the function now aborts
+  # with a clear error rather than printing a success message for a copy
+  # that never happened.
+  cp "$CTF_ENV_SOURCE" "$CTF_ENV_FILE" \
+    || { print_err "Deploy failed — could not write: ${BOLD}${CTF_ENV_FILE}${RESET}"; return 1; }
   print_ok "Deployed: ${BOLD}${CTF_ENV_SOURCE}${RESET} → ${BOLD}${CTF_ENV_FILE}${RESET}"
   print_info "To update session commands: edit ctf-env-functions.sh, push, run ${BOLD}ctf-sync${RESET}"
   print_info "Then reload with: ${BOLD}source ~/.ctf_env${RESET} — no reinstall needed."
@@ -373,9 +462,23 @@ run_deploy_env() {
 run_patch_zshrc() {
   print_step "Patching ~/.zshrc"
 
+  # TEACHING NOTE — Observation fix: explicitly note when ~/.zshrc is new.
+  #
+  # The >> operator creates the file if it doesn't exist, so this function
+  # always succeeds regardless of whether ~/.zshrc was already present. On
+  # a fresh machine this is probably fine, but silently creating a new file
+  # and silently appending to an existing one look identical from the outside.
+  # A user debugging their shell config later deserves to know which happened.
+  #
+  # The fix adds an explicit check: if the file doesn't exist yet, we note
+  # that it was created rather than just patched. The >> append still works
+  # the same way in both cases — only the feedback message changes.
   if grep -q "source.*\.ctf_env" "$ZSHRC" 2>/dev/null; then
     print_skip "~/.zshrc already sources ~/.ctf_env"
   else
+    if [[ ! -f "$ZSHRC" ]]; then
+      print_info "~/.zshrc not found — creating it."
+    fi
     echo "" >> "$ZSHRC"
     echo "# CTF Toolkit — loaded by ctf-install.sh on $(date +%Y-%m-%d)" >> "$ZSHRC"
     echo "source ~/.ctf_env" >> "$ZSHRC"
@@ -462,9 +565,16 @@ run_build_directories() {
 
   # Fix ownership recursively after all dirs are built.
   # Runs unconditionally so re-runs and partial states are always corrected.
+  # TEACHING NOTE — Bug fix #A (continued): chown uses REAL_USER, not $USER.
+  #
+  # Under sudo, $USER is set to "root" — the same problem as $HOME. Using
+  # $USER here would transfer ownership to root, defeating the entire purpose
+  # of the chown. REAL_USER was resolved at the top of the script alongside
+  # _CTF_HOME: it holds the name of the user who invoked sudo, or just $USER
+  # when the script runs without elevation.
   if $use_sudo; then
-    sudo chown -R "$USER":"$USER" "$CTF_BASE"
-    print_ok "Ownership set: ${BOLD}${CTF_BASE}${RESET} → ${USER}"
+    sudo chown -R "${REAL_USER}:${REAL_USER}" "$CTF_BASE"
+    print_ok "Ownership set: ${BOLD}${CTF_BASE}${RESET} → ${REAL_USER}"
   fi
 }
 
@@ -508,13 +618,23 @@ run_symlinks() {
     chmod +x "$script"
 
     if [[ -L "$linkpath" ]]; then
-      sudo ln -sf "$script" "$linkpath"
+      # TEACHING NOTE — Bug fix #C (continued): ln -sf failures are now caught.
+      #
+      # Previously, a failed symlink operation (insufficient permissions,
+      # target directory not writable) would print nothing and the loop would
+      # continue to the next script, incrementing the count as if it succeeded.
+      # The final message would then claim N scripts were symlinked when some
+      # were not. The fix aborts the current iteration with a clear error,
+      # leaving the count accurate for the scripts that did succeed.
+      sudo ln -sf "$script" "$linkpath" \
+        || { print_err "Failed to update symlink: ${BOLD}${linkname}${RESET}"; continue; }
       print_ok "Updated symlink: ${BOLD}${linkname}${RESET} → ${DIM}${script}${RESET}"
     elif [[ -f "$linkpath" ]]; then
       print_warn "File already exists at ${BOLD}${linkpath}${RESET} — skipping"
       print_info "Remove it manually to allow symlinking: ${BOLD}sudo rm ${linkpath}${RESET}"
     else
-      sudo ln -sf "$script" "$linkpath"
+      sudo ln -sf "$script" "$linkpath" \
+        || { print_err "Failed to create symlink: ${BOLD}${linkname}${RESET}"; continue; }
       print_ok "Created symlink:  ${BOLD}${linkname}${RESET} → ${DIM}${script}${RESET}"
     fi
 
@@ -530,13 +650,20 @@ run_symlinks() {
 # =============================================================================
 # STEP 7 — RUN ctf-sync TO ENSURE REPO IS CURRENT
 # =============================================================================
-# TEACHING NOTE — Threading --prod through to ctf-sync.
+# TEACHING NOTE — Threading --prod through to ctf-sync via an array.
 #
 # When ctf-install is run with --prod, Step 7 must pass that flag along to
 # ctf-sync. If it didn't, ctf-sync would run its own auto-detection and
 # potentially target the dev path instead — silently undoing the intent of
-# --prod. SYNC_FLAGS is empty when --prod is not set, so the call is
-# identical to the previous behaviour in that case.
+# --prod.
+#
+# Bug fix #E: SYNC_FLAGS was previously a plain string variable, expanded
+# unquoted when passed to ctf-sync. An unquoted empty string is harmless in
+# this specific case (it expands to nothing), but it is fragile: if SYNC_FLAGS
+# ever grew to contain a value with spaces, word-splitting would break it into
+# separate arguments silently. The idiomatic zsh/bash solution is an array:
+# "${sync_flags[@]}" expands to zero words when empty and to one word per
+# element otherwise — no quoting ambiguity, no word-splitting risk.
 #
 # The fallback uses zsh (not bash) because ctf-sync.sh uses zsh-specific
 # syntax and has a #!/bin/zsh shebang.
@@ -544,13 +671,13 @@ run_symlinks() {
 run_sync() {
   print_step "Syncing Repo"
 
-  local SYNC_FLAGS=""
-  $FORCE_PROD && SYNC_FLAGS="--prod"
+  local sync_flags=()
+  $FORCE_PROD && sync_flags=("--prod")
 
   if command -v ctf-sync &>/dev/null; then
-    ctf-sync $SYNC_FLAGS
+    ctf-sync "${sync_flags[@]}"
   elif [[ -f "$SETUP_DIR/ctf-sync.sh" ]]; then
-    zsh "$SETUP_DIR/ctf-sync.sh" $SYNC_FLAGS
+    zsh "$SETUP_DIR/ctf-sync.sh" "${sync_flags[@]}"
   else
     print_warn "ctf-sync not available — skipping."
     print_info "It will be available after this install completes."
@@ -594,9 +721,16 @@ echo "  ${DIM}Shell:   ${ZSHRC}${RESET}"
 
 # Surface the active mode clearly so the user can confirm the right install
 # is targeted before any changes are made.
+# TEACHING NOTE — Bug fix #A (continued): mode detection uses _CTF_HOME.
+#
+# The previous check compared $REPO_DIR against $HOME* to decide whether
+# to label the mode "dev" or "production". Under sudo, $HOME is /root, so
+# a dev repo at /home/talos/github/CTF_Public would never match /root* and
+# would be incorrectly labelled "production". Using $_CTF_HOME ensures the
+# prefix check reflects the invoking user's actual home directory.
 if $FORCE_PROD; then
   echo "  ${YELLOW}Mode:    production (--prod)${RESET}"
-elif [[ "$REPO_DIR" == "$HOME"* ]]; then
+elif [[ "$REPO_DIR" == "$_CTF_HOME"* ]]; then
   echo "  ${DIM}Mode:    dev (auto-detected)${RESET}"
 else
   echo "  ${DIM}Mode:    production (auto-detected)${RESET}"
@@ -621,7 +755,13 @@ fi
 if ! $SKIP_CONFIRM; then
   echo ""
   echo -n "${YELLOW}  Continue? [y/N]:${RESET} "
-  read confirm
+  # TEACHING NOTE — Bug fix #F: added -r flag to read.
+  #
+  # Without -r, a backslash in the input is treated as a line-continuation
+  # escape — typing \ then Enter silently consumes the next line rather than
+  # registering as a "N". With -r, backslash is treated as a literal character.
+  # Every interactive read in the toolkit now uses -r consistently.
+  read -r confirm
   if [[ "$confirm" != [yY] ]]; then
     echo ""
     echo "${DIM}  Aborted. Nothing changed.${RESET}"

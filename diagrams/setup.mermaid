@@ -5,9 +5,21 @@ title: Production Setup
 flowchart TD
 	%% Node Definitions
 	Node1@{ shape: rect, label: "ctf-env-functions.sh" }
-	Node2@{ shape: circle, label: "ctf-install.sh" }
-	Node3@{ shape: circle, label: "ctf-sync.sh" }
+	Node2@{ shape: rect, label: "ctf-install.sh" }
+	Node3@{ shape: rect, label: "ctf-sync.sh" }
 
 	%% Connection Definitions
 	Node2 --- Node1
-	Node3 --> Node1 & Node2 & Node 3
+	Node3 --> Node1 & Node2 & Node3
+
+	%% Subgraph - Script: ctf-env-functions.sh
+	subgraph ctf-env-functions.sh [ctf-env-functions.sh]
+	end
+
+	%% Subgraph - Script: ctf-install.sh
+	subgraph ctf-install.sh [ctf-install.sh]
+	end
+
+	%% Subgraph - Script: ctf-sync.sh
+	subgraph ctf-sync.sh [ctf-sync.sh]
+	end
