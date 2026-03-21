@@ -210,7 +210,7 @@ elif [[ -d "/opt/CTF_Public" ]]; then
   REPO_DIR="/opt/CTF_Public"
 else
   # No repo found anywhere — set the default target for cloning.
-  # run_sync (Step 7, now Step 1 — see integration fix #2) will clone it.
+  # run_sync (Step 3) will clone it.
   REPO_DIR="/opt/CTF_Public"
 fi
 
@@ -232,6 +232,29 @@ BACKUP_DIR="$_CTF_HOME/.ctf_backups"
 ZSHRC="$_CTF_HOME/.zshrc"
 SYMLINK_DIR="/usr/local/bin"
 SETUP_DIR="$REPO_DIR/setup"
+
+# --- Colors -------------------------------------------------------------------
+# TEACHING NOTE — Colors and helpers are defined here, before the KNOWN_PLATFORMS
+# load block, because the fallback branch of that block calls print_warn and
+# print_info on a fresh machine (when CTF_ENV_SOURCE doesn't exist yet).
+# In zsh, calling a function at script body scope before it is defined produces
+# "command not found". Defining colors and helpers here ensures they are always
+# available regardless of which branch executes.
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+GREEN='\033[0;32m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
+DIM='\033[2m'
+RESET='\033[0m'
+
+# --- Helpers ------------------------------------------------------------------
+print_ok()   { echo "${GREEN}[OK]${RESET}    $1"; }
+print_skip() { echo "${DIM}[SKIP]  $1${RESET}"; }
+print_warn() { echo "${YELLOW}[WARN]${RESET}  $1"; }
+print_err()  { echo "${RED}[ERROR]${RESET} $1"; }
+print_info() { echo "${CYAN}[INFO]${RESET}  $1"; }
+print_step() { echo ""; echo "${BOLD}${CYAN}── $1 ──${RESET}"; }
 
 # Load KNOWN_PLATFORMS from the env functions file — it is the authority.
 # TEACHING NOTE — Integration fix #3: soft handling for fresh machines.
@@ -301,23 +324,6 @@ REQUIRED_TOOLS=(
   "wget:Wget:wget:3"
   "python3:Python3:python3:2"
 )
-
-# --- Colors -------------------------------------------------------------------
-RED='\033[0;31m'
-YELLOW='\033[1;33m'
-GREEN='\033[0;32m'
-CYAN='\033[0;36m'
-BOLD='\033[1m'
-DIM='\033[2m'
-RESET='\033[0m'
-
-# --- Helpers ------------------------------------------------------------------
-print_ok()   { echo "${GREEN}[OK]${RESET}    $1"; }
-print_skip() { echo "${DIM}[SKIP]  $1${RESET}"; }
-print_warn() { echo "${YELLOW}[WARN]${RESET}  $1"; }
-print_err()  { echo "${RED}[ERROR]${RESET} $1"; }
-print_info() { echo "${CYAN}[INFO]${RESET}  $1"; }
-print_step() { echo ""; echo "${BOLD}${CYAN}── $1 ──${RESET}"; }
 
 # --- Help ---------------------------------------------------------------------
 show_help() {
@@ -724,12 +730,12 @@ run_symlinks() {
 
 
 # =============================================================================
-# STEP 7 — RUN ctf-sync TO ENSURE REPO IS CURRENT
+# STEP 3 — SYNC REPO (clone fresh or pull latest)
 # =============================================================================
 # TEACHING NOTE — Threading --prod through to ctf-sync via an array.
 #
-# When ctf-install is run with --prod, Step 7 must pass that flag along to
-# ctf-sync. If it didn't, ctf-sync would run its own auto-detection and
+# When ctf-install is run with --prod, the sync step must pass that flag along
+# to ctf-sync. If it didn't, ctf-sync would run its own auto-detection and
 # potentially target the dev path instead — silently undoing the intent of
 # --prod.
 #
