@@ -166,6 +166,178 @@ print_out()  { echo "$1" | sed 's/^/  /'; }
 TARGET_USER="${SUDO_USER:-$USER}"
 TARGET_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
 TARGET_HOME="${TARGET_HOME:-$HOME}"
+TARGET_UID=$(id -u "$TARGET_USER" 2>/dev/null)
+
+
+# =============================================================================
+# SECTION 2a — PRIVILEGE AND OWNERSHIP HELPERS
+# =============================================================================
+# TEACHING NOTE — Principle of Least Privilege in a test harness.
+#
+# This harness must run as root (git clone into /opt, chown, symlinks) but
+# most actions — reading files, checking variables — don't need root.
+# These helpers enforce a "check before you act" discipline:
+#
+#   require_root  "context"   — Abort if not running as root.
+#   require_user  "context"   — Abort if running as root when only user
+#                                privileges are expected (guard against
+#                                accidental root operations).
+#   current_privilege         — Returns "root" or "user" for display/logging.
+#   fix_ownership <path>      — chown to TARGET_USER, verify, abort on failure.
+#   fix_ownership_recursive <path> — Same, but recursive (-R).
+#
+# The "never use su" rule is enforced by design: every root action runs
+# in the current root process. User-context actions use `env SUDO_USER=`
+# to set identity without spawning a new privilege boundary.
+# =============================================================================
+
+# current_privilege — Returns "root" or "user" (the actual EUID, not TARGET_USER).
+current_privilege() {
+  if [[ $EUID -eq 0 ]]; then
+    echo "root"
+  else
+    echo "user"
+  fi
+}
+
+# require_root "context message"
+# Aborts the script if the current effective user is not root.
+# Call this before any action that genuinely needs root (git clone into /opt,
+# chown, mkdir in /opt, ln -sf in /usr/local/bin, running the installer).
+require_root() {
+  local context="$1"
+  if [[ $EUID -ne 0 ]]; then
+    echo ""
+    echo "  ${RED}[ABORT]${RESET} Root privileges required but not available."
+    echo "  ${DIM}Context : ${context}${RESET}"
+    echo "  ${DIM}EUID    : ${EUID}${RESET}"
+    echo "  ${DIM}USER    : $(whoami)${RESET}"
+    echo "  ${DIM}Fix     : Re-run with sudo${RESET}"
+    echo ""
+    exit 1
+  fi
+}
+
+# require_user "context message"
+# Aborts if the script is NOT running as the expected non-root user.
+# Use in blocks where root should NOT be the actor (e.g. verifying user-owned
+# files from the user's perspective). In this harness, operations run as root
+# with SUDO_USER set — so this checks that TARGET_USER is a real non-root
+# account, preventing misuse if SUDO_USER resolved to "root".
+require_user() {
+  local context="$1"
+  if [[ -z "$TARGET_USER" || "$TARGET_USER" == "root" ]]; then
+    echo ""
+    echo "  ${RED}[ABORT]${RESET} Expected a non-root target user but got '${TARGET_USER}'."
+    echo "  ${DIM}Context     : ${context}${RESET}"
+    echo "  ${DIM}SUDO_USER   : ${SUDO_USER:-<unset>}${RESET}"
+    echo "  ${DIM}USER        : ${USER}${RESET}"
+    echo "  ${DIM}TARGET_USER : ${TARGET_USER}${RESET}"
+    echo "  ${DIM}Fix         : Run with sudo from a non-root account${RESET}"
+    echo "  ${DIM}             (sudo sets SUDO_USER to the invoking user)${RESET}"
+    echo ""
+    exit 1
+  fi
+}
+
+# fix_ownership <path> [description]
+# Changes ownership of a single file or directory to TARGET_USER:TARGET_USER.
+# Verifies the change succeeded. Aborts with verbose diagnostics on failure.
+# Does NOT recurse — use fix_ownership_recursive for directory trees.
+#
+# TEACHING NOTE — Why verify after chown?
+# chown can silently fail on read-only filesystems, immutable files, or
+# paths with special characters that shell expansion mangles. Checking
+# the owner after the change catches these edge cases immediately instead
+# of letting them cascade into confusing [FAIL]s later.
+fix_ownership() {
+  local target_path="$1"
+  local description="${2:-$target_path}"
+
+  if [[ ! -e "$target_path" ]]; then
+    echo ""
+    echo "  ${RED}[ABORT]${RESET} fix_ownership: path does not exist."
+    echo "  ${DIM}Path    : ${target_path}${RESET}"
+    echo "  ${DIM}Context : ${description}${RESET}"
+    echo ""
+    exit 1
+  fi
+
+  local current_owner
+  current_owner=$(stat -c '%U' "$target_path" 2>/dev/null)
+
+  if [[ "$current_owner" == "$TARGET_USER" ]]; then
+    return 0
+  fi
+
+  print_info "Ownership fix: ${description} (${current_owner} → ${TARGET_USER})"
+  chown "${TARGET_USER}:${TARGET_USER}" "$target_path" 2>/dev/null
+
+  # Verify
+  local new_owner
+  new_owner=$(stat -c '%U' "$target_path" 2>/dev/null)
+  if [[ "$new_owner" != "$TARGET_USER" ]]; then
+    echo ""
+    echo "  ${RED}[ABORT]${RESET} fix_ownership: chown failed to change owner."
+    echo "  ${DIM}Path     : ${target_path}${RESET}"
+    echo "  ${DIM}Expected : ${TARGET_USER}${RESET}"
+    echo "  ${DIM}Actual   : ${new_owner}${RESET}"
+    echo "  ${DIM}Context  : ${description}${RESET}"
+    echo "  ${DIM}EUID     : ${EUID} ($(current_privilege))${RESET}"
+    echo ""
+    exit 1
+  fi
+}
+
+# fix_ownership_recursive <path> [description]
+# Same as fix_ownership but applies -R for entire directory trees.
+# Verifies by scanning for any files still not owned by TARGET_USER.
+fix_ownership_recursive() {
+  local target_path="$1"
+  local description="${2:-$target_path}"
+
+  if [[ ! -e "$target_path" ]]; then
+    echo ""
+    echo "  ${RED}[ABORT]${RESET} fix_ownership_recursive: path does not exist."
+    echo "  ${DIM}Path    : ${target_path}${RESET}"
+    echo "  ${DIM}Context : ${description}${RESET}"
+    echo ""
+    exit 1
+  fi
+
+  # Check if anything needs fixing first
+  local wrong_files
+  wrong_files=$(find "$target_path" -P ! -user "$TARGET_USER" 2>/dev/null)
+  if [[ -z "$wrong_files" ]]; then
+    return 0
+  fi
+
+  local wrong_count
+  wrong_count=$(echo "$wrong_files" | wc -l)
+  print_info "Ownership fix: ${description} — ${wrong_count} item(s) not owned by ${TARGET_USER}"
+
+  chown -R "${TARGET_USER}:${TARGET_USER}" "$target_path" 2>/dev/null
+
+  # Verify — no files should remain with wrong ownership
+  local still_wrong
+  still_wrong=$(find "$target_path" -P ! -user "$TARGET_USER" 2>/dev/null)
+  if [[ -n "$still_wrong" ]]; then
+    local still_count
+    still_count=$(echo "$still_wrong" | wc -l)
+    echo ""
+    echo "  ${RED}[ABORT]${RESET} fix_ownership_recursive: ${still_count} item(s) still not owned by ${TARGET_USER} after chown -R."
+    echo "  ${DIM}Path    : ${target_path}${RESET}"
+    echo "  ${DIM}Context : ${description}${RESET}"
+    echo "  ${DIM}EUID    : ${EUID} ($(current_privilege))${RESET}"
+    echo "  ${DIM}Remaining items:${RESET}"
+    echo "$still_wrong" | head -10 | sed 's/^/    /'
+    if [[ $still_count -gt 10 ]]; then
+      echo "    ... and $((still_count - 10)) more"
+    fi
+    echo ""
+    exit 1
+  fi
+}
 
 REPO_URL="https://github.com/Ghost-Glitch04/CTF_Public"
 REPO_DIR="/opt/CTF_Public"
@@ -198,10 +370,21 @@ echo "${BOLD}${CYAN}=== CTF Toolkit Install Test Harness ===${RESET}"
 echo ""
 echo "  ${DIM}Branch:  ${BRANCH}${RESET}"
 echo "  ${DIM}Cleanup: $(${CLEANUP} && echo yes || echo no)${RESET}"
-echo "  ${DIM}User:    ${TARGET_USER}${RESET}"
+echo "  ${DIM}User:    ${TARGET_USER} (UID: ${TARGET_UID})${RESET}"
+echo "  ${DIM}Home:    ${TARGET_HOME}${RESET}"
+echo "  ${DIM}Running as: $(current_privilege) (EUID: ${EUID})${RESET}"
 echo ""
 
 print_step "Pre-flight"
+
+# Verify root privileges are available (required for clone, install, chown)
+require_root "Pre-flight: harness must be run with sudo"
+
+# Verify TARGET_USER resolved to an actual non-root user
+require_user "Pre-flight: SUDO_USER must resolve to the invoking non-root user"
+
+print_check "Running as root" "pass"
+print_check "Target user is non-root (${TARGET_USER}, UID ${TARGET_UID})" "pass"
 
 if [[ -d "$REPO_DIR" ]]; then
   echo ""
@@ -242,21 +425,27 @@ print_info "Pre-flight passed. Starting test run."
 
 print_step "Clone — branch: ${BRANCH}"
 
-print_cmd "sudo git clone -b ${BRANCH} ${REPO_URL} ${REPO_DIR}"
-clone_output=$(sudo git clone -b "$BRANCH" "$REPO_URL" "$REPO_DIR" 2>&1)
+# Clone requires root (writing to /opt)
+require_root "Clone: git clone into ${REPO_DIR}"
+print_info "Privilege: $(current_privilege) — required for clone into /opt"
+
+print_cmd "git clone -b ${BRANCH} ${REPO_URL} ${REPO_DIR}"
+clone_output=$(git clone -b "$BRANCH" "$REPO_URL" "$REPO_DIR" 2>&1)
 clone_exit=$?
 print_out "$clone_output"
 
 check "git clone exited successfully"       test $clone_exit -eq 0
 check "ctf-install.sh exists in repo"       test -f "$INSTALL_SCRIPT"
 
-# Make executable and fix ownership
-sudo chmod +x "$INSTALL_SCRIPT" 2>/dev/null
-sudo chown -R "${TARGET_USER}:${TARGET_USER}" "$REPO_DIR" 2>/dev/null
-
+# Make executable — requires root (file owned by root after clone)
+chmod +x "$INSTALL_SCRIPT" 2>/dev/null
 check "ctf-install.sh is executable"        test -x "$INSTALL_SCRIPT"
+
+# Fix ownership: clone ran as root, so all files are root-owned.
+# The repo should be owned by the target user.
+fix_ownership_recursive "$REPO_DIR" "Cloned repo → ${TARGET_USER}"
 check "${REPO_DIR} owned by ${TARGET_USER}" \
-  test -z "$(find "$REPO_DIR" ! -user "$TARGET_USER" 2>/dev/null)"
+  test -z "$(find "$REPO_DIR" -P ! -user "$TARGET_USER" 2>/dev/null)"
 
 
 # =============================================================================
@@ -281,6 +470,10 @@ check "${REPO_DIR} owned by ${TARGET_USER}" \
 # =============================================================================
 
 print_step "Install — ctf-install.sh --prod --yes"
+
+# Installer requires root for mkdir/chown/ln in /opt and /usr/local/bin
+require_root "Install: ctf-install.sh needs root for system-level operations"
+print_info "Privilege: $(current_privilege) — required for installer"
 
 INSTALL_LOG=$(mktemp)
 print_cmd "${INSTALL_SCRIPT} --prod --yes"
@@ -328,13 +521,24 @@ check "ctf-install.sh exited successfully"  test $install_exit -eq 0
 
 print_step "Post-install Checks"
 
+print_info "Privilege: $(current_privilege) — read-only verification (no root needed)"
+
 # ~/.ctf_env
 check "~/.ctf_env was deployed" \
   test -f "${TARGET_HOME}/.ctf_env"
 
+# Verify installer didn't leave user-home files owned by root
+if [[ -f "${TARGET_HOME}/.ctf_env" ]]; then
+  fix_ownership "${TARGET_HOME}/.ctf_env" "~/.ctf_env → ${TARGET_USER}"
+fi
+
 # ~/.zshrc patched
 check "~/.zshrc sources ~/.ctf_env" \
   grep -q "source.*\.ctf_env" "${TARGET_HOME}/.zshrc"
+
+if [[ -f "${TARGET_HOME}/.zshrc" ]]; then
+  fix_ownership "${TARGET_HOME}/.zshrc" "~/.zshrc → ${TARGET_USER}"
+fi
 
 # Platform directories
 for code in "${EXPECTED_PLATFORMS[@]}"; do
@@ -342,9 +546,12 @@ for code in "${EXPECTED_PLATFORMS[@]}"; do
     test -d "${CTF_BASE}/${code}"
 done
 
-# Ownership of CTF base
+# Ownership of CTF base — fix if needed, then verify
+if [[ -d "$CTF_BASE" ]]; then
+  fix_ownership_recursive "$CTF_BASE" "/opt/CTF tree → ${TARGET_USER}"
+fi
 check "/opt/CTF owned by ${TARGET_USER}" \
-  test -z "$(find "$CTF_BASE" ! -user "$TARGET_USER" 2>/dev/null)"
+  test -z "$(find "$CTF_BASE" -P ! -user "$TARGET_USER" 2>/dev/null)"
 
 # Symlinks in /usr/local/bin/
 for sym in "${EXPECTED_SYMLINKS[@]}"; do
@@ -377,6 +584,10 @@ fi
 # =============================================================================
 
 print_step "Session — set-platform / set-box / set-address / set-env"
+
+# Session subshell runs as root with SUDO_USER set (same as installer)
+require_root "Session: subshell needs root for internal sudo calls (set-box mkdir/chown)"
+print_info "Privilege: $(current_privilege) — required for set-box mkdir/chown in /opt"
 
 # Run session setup in a subshell, capture all four variable values.
 #
@@ -414,10 +625,37 @@ echo ""
 
 # Parse the variable snapshot line
 vars_line=$(echo "$session_output" | grep "^__VARS__")
-session_platform=$(echo "$vars_line" | grep -oP 'PLATFORM=\K[^ ]+')
-session_boxname=$(echo  "$vars_line" | grep -oP 'BOXNAME=\K[^ ]+')
-session_address=$(echo  "$vars_line" | grep -oP 'ADDRESS=\K[^ ]+')
-session_boxdir=$(echo   "$vars_line" | grep -oP 'BOX_DIR=\K[^ ]+')
+
+# Debug: Show the raw vars_line
+if [[ -n "$vars_line" ]]; then
+  print_info "Variable snapshot captured:"
+  echo "  $vars_line"
+else
+  print_info "${RED}WARNING: No __VARS__ line found in session output${RESET}"
+  print_info "Full session output:"
+  echo "$session_output" | sed 's/^/    /'
+fi
+
+# TEACHING NOTE — More robust parsing that doesn't require Perl regex.
+# Uses parameter expansion to extract values: ${string##*PREFIX} removes PREFIX,
+# ${string%% *} removes the first space and everything after.
+session_platform=""
+session_boxname=""
+session_address=""
+session_boxdir=""
+
+if [[ "$vars_line" =~ PLATFORM=([^ ]+) ]]; then
+  session_platform="${match[1]}"
+fi
+if [[ "$vars_line" =~ BOXNAME=([^ ]+) ]]; then
+  session_boxname="${match[1]}"
+fi
+if [[ "$vars_line" =~ ADDRESS=([^ ]+) ]]; then
+  session_address="${match[1]}"
+fi
+if [[ "$vars_line" =~ BOX_DIR=([^ ]+) ]]; then
+  session_boxdir="${match[1]}"
+fi
 
 check "PLATFORM set to ${TEST_PLATFORM}"         test "$session_platform" = "$TEST_PLATFORM"
 check "BOXNAME set to ${TEST_BOX}"               test "$session_boxname"  = "$TEST_BOX"
@@ -439,6 +677,11 @@ check "BOX_DIR set to ${BOX_WORKSPACE}"          test "$session_boxdir"   = "$BO
 check "set-env prod wrote ~/.ctf_env_mode" \
   test -f "${TARGET_HOME}/.ctf_env_mode"
 
+# Fix ownership on session-created files in user's home
+if [[ -f "${TARGET_HOME}/.ctf_env_mode" ]]; then
+  fix_ownership "${TARGET_HOME}/.ctf_env_mode" "~/.ctf_env_mode → ${TARGET_USER}"
+fi
+
 check "~/.ctf_env_mode contains prod path (/opt/CTF_Public)" \
   grep -q "opt/CTF_Public" "${TARGET_HOME}/.ctf_env_mode"
 
@@ -449,6 +692,8 @@ check "~/.ctf_env_mode contains prod path (/opt/CTF_Public)" \
 
 print_step "Workspace Structure — ${BOX_WORKSPACE}"
 
+print_info "Privilege: $(current_privilege) — read-only verification + ownership fix if needed"
+
 check "Box workspace directory exists"       test -d "$BOX_WORKSPACE"
 check ".env file created in workspace"       test -f "${BOX_WORKSPACE}/.env"
 check "notes/notes.md starter file exists"  test -f "${BOX_WORKSPACE}/notes/notes.md"
@@ -457,9 +702,12 @@ for subdir in "${EXPECTED_SUBDIRS[@]}"; do
   check "Subdir '${subdir}' exists"  test -d "${BOX_WORKSPACE}/${subdir}"
 done
 
-# Ownership of the box workspace
+# Fix ownership of the entire box workspace tree, then verify
+if [[ -d "$BOX_WORKSPACE" ]]; then
+  fix_ownership_recursive "$BOX_WORKSPACE" "Box workspace tree → ${TARGET_USER}"
+fi
 check "Box workspace owned by ${TARGET_USER}" \
-  test -z "$(find "$BOX_WORKSPACE" ! -user "$TARGET_USER" 2>/dev/null)"
+  test -z "$(find "$BOX_WORKSPACE" -P ! -user "$TARGET_USER" 2>/dev/null)"
 
 # Print the directory listing for reference
 echo ""
@@ -478,9 +726,13 @@ ls -la "${BOX_WORKSPACE}/notes" 2>/dev/null | sed 's/^/  /'
 if $CLEANUP; then
   print_step "Cleanup — full-removal.sh --yes"
 
-  print_cmd "sudo ${REMOVAL_SCRIPT} --yes"
+  # Cleanup requires root for rm -rf in /opt and /usr/local/bin
+  require_root "Cleanup: full-removal.sh needs root to remove system files"
+  print_info "Privilege: $(current_privilege) — required for system-level removal"
+
+  print_cmd "${REMOVAL_SCRIPT} --yes"
   echo ""
-  sudo "$REMOVAL_SCRIPT" --yes 2>&1 | sed 's/^/  /'
+  "$REMOVAL_SCRIPT" --yes 2>&1 | sed 's/^/  /'
   removal_exit=${pipestatus[1]}
   echo ""
 

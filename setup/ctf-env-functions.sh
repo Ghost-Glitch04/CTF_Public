@@ -237,6 +237,38 @@ _ctf_info() { echo "${_CTF_CYAN}[INFO]${_CTF_RESET}  $1"; }
 
 
 # =============================================================================
+# _ctf_fix_owner <path> [<path> ...]
+# =============================================================================
+# TEACHING NOTE — Root-safety: every function that creates files owns its cleanup.
+#
+# When these scripts run as root with SUDO_USER set (e.g. `sudo ctf-install.sh`
+# or a test harness using `env SUDO_USER=kali`), every file operation creates
+# files owned by root. The user then can't read, write, or source those files
+# from their normal shell session.
+#
+# This helper applies a single rule: if we're root and REAL_USER is someone
+# else, chown the given path(s) to REAL_USER. It is called after every file
+# creation — each function is responsible for its own ownership, rather than
+# relying on callers to clean up.
+#
+# When running as the normal user (the common case), this is a no-op: the
+# `id -u` check fails immediately and the function returns. Zero overhead.
+#
+# Design decisions:
+#   - Plain `chown`, not `sudo chown`: when running as root, plain chown can
+#     change ownership of anything. When running as non-root, we skip entirely.
+#   - 2>/dev/null: if the path doesn't exist (race condition, error in caller),
+#     fail silently — the caller's own error handling will surface the real issue.
+#   - Accepts multiple paths: _ctf_fix_owner "$file1" "$file2" is one call.
+# =============================================================================
+
+_ctf_fix_owner() {
+  [[ "$(id -u)" -eq 0 && -n "$REAL_USER" && "$REAL_USER" != "root" ]] || return 0
+  chown "${REAL_USER}:${REAL_USER}" "$@" 2>/dev/null
+}
+
+
+# =============================================================================
 # _ctf_persist
 # =============================================================================
 # TEACHING NOTE — Persistence: writing state back to disk.
@@ -350,6 +382,7 @@ _ctf_persist() {
   # 0644 (owner rw, group/other read) matches what `cp` produces and is
   # the standard permission for shell config files that need to be sourced.
   chmod 644 "$_CTF_HOME/.ctf_env"
+  _ctf_fix_owner "$_CTF_HOME/.ctf_env"
 }
 
 
@@ -377,6 +410,7 @@ export PLATFORM="${PLATFORM}"
 export BOXNAME="${BOXNAME}"
 export BOX_DIR="${BOX_DIR}"
 BOXENV
+  _ctf_fix_owner "${BOX_DIR}/.env"
 }
 
 
@@ -597,6 +631,7 @@ set-env() {
   # confirm what mode is active, and `rm` it to return to auto-detection.
   echo "export CTF_REPO_DIR=\"${target_path}\"" > "$_CTF_HOME/.ctf_env_mode" \
     || { _ctf_err "Could not write mode file: ~/.ctf_env_mode"; return 1; }
+  _ctf_fix_owner "$_CTF_HOME/.ctf_env_mode"
 
   _ctf_ok "Mode '${mode}' persisted to ~/.ctf_env_mode"
 
@@ -804,24 +839,9 @@ set-box() {
       fi
     done
 
-    # Fix ownership so the normal user can write into the workspace.
-    # TEACHING NOTE — sudo mkdir creates dirs owned by root. Even though
-    # ctf-install.sh chowns /opt/CTF at install time, new box directories are
-    # created here at runtime — after install — so they also need an explicit
-    # chown. The recursive flag covers BOX_DIR and all its subdirs in one call,
-    # matching the same pattern used in ctf-install.sh's run_build_directories.
-    #
-    # TEACHING NOTE — Integration fix: chown uses REAL_USER, not $USER.
-    #
-    # Under sudo, $USER is set to "root". Using $USER here would transfer
-    # ownership of the entire workspace to root — the user would immediately
-    # find they cannot write to their own scans/, notes/, or flags/ folders.
-    # REAL_USER is resolved at the top of this file alongside _CTF_HOME and
-    # holds the invoking user's name regardless of sudo context, matching the
-    # same pattern used in ctf-install.sh and ctf-sync.sh.
-    if $use_sudo; then
-      sudo chown -R "${REAL_USER}:${REAL_USER}" "$BOX_DIR"
-    fi
+    # Ownership is NOT chowned here. It is deferred to the end of the
+    # function, AFTER notes.md and .env are created. See the final chown
+    # block below for the explanation.
 
     _ctf_ok "Created workspace: ${_CTF_BOLD}${BOX_DIR}${_CTF_RESET}"
     _ctf_info "Folders: ${_CTF_DIM}${_CTF_BOX_DIRS[*]}${_CTF_RESET}"
@@ -859,6 +879,27 @@ NOTESEOF
 
   _ctf_persist
   _ctf_write_box_env
+
+  # TEACHING NOTE — Deferred ownership fix: chown runs LAST, after all files.
+  #
+  # The previous version chowned BOX_DIR immediately after creating the
+  # subdirectories, before notes.md and .env were written. When set-box
+  # runs under sudo (or in a root-context test harness), the process
+  # creates files as root. Files written AFTER the chown inherit root
+  # ownership, defeating the purpose of the chown entirely.
+  #
+  # Moving the chown to the end of the function ensures every file —
+  # subdirectories, notes.md, .env — is covered by a single recursive
+  # chown. This is the same "chown at the end" pattern used in
+  # ctf-install.sh's run_build_directories.
+  #
+  # The chown runs unconditionally whenever BOX_DIR is under /opt (i.e.
+  # use_sudo territory). For existing workspaces, it re-chowns .env
+  # (rewritten by _ctf_write_box_env every time) and ensures any
+  # ownership drift from prior sudo operations is corrected.
+  if [[ "$CTF_BASE" == /opt/* && -d "$BOX_DIR" ]]; then
+    sudo chown -R "${REAL_USER}:${REAL_USER}" "$BOX_DIR"
+  fi
 }
 
 
