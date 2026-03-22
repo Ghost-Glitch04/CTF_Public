@@ -1,46 +1,761 @@
 ---
 title: Production Setup
 ---
-
 flowchart TD
-	%% Node Definitions - Scripts
-	Node1@{ shape: rect, label: "ctf-env-functions.sh" }
-	Node2@{ shape: rect, label: "ctf-install.sh" }
-	Node3@{ shape: rect, label: "ctf-sync.sh" }
+    %% =========================================================================
+    %% NODE DEFINITIONS
+    %% =========================================================================
 
-    %% Node Definitions - Functions
+    %% --- Flags: ctf-install.sh -----------------------------------------------
+    IN_A1@{ shape: flag, label: "--prod" }
+    IN_A2@{ shape: flag, label: "--check" }
+    IN_A3@{ shape: flag, label: "--yes / -y" }
+    IN_A4@{ shape: flag, label: "--help / -h" }
 
-	%% Node Definitions - Variables
+    %% --- Flags: ctf-sync.sh --------------------------------------------------
+    SY_A1@{ shape: flag, label: "--prod" }
+    SY_A2@{ shape: flag, label: "--help / -h" }
 
+    %% --- Arguments: ctf-env-functions.sh public commands ---------------------
+    EF_A1@{ shape: flag, label: "<ip_address>" }
+    EF_A2@{ shape: flag, label: "<dev|prod>" }
+    EF_A3@{ shape: flag, label: "<platform_code>" }
+    EF_A4@{ shape: flag, label: "<box_name>" }
 
+    %% --- Functions: ctf-env-functions.sh (Private Helpers) ------------------
+    EF_H1@{ shape: lin-rect, label: "_ctf_ok()" }
+    EF_H2@{ shape: lin-rect, label: "_ctf_warn()" }
+    EF_H3@{ shape: lin-rect, label: "_ctf_err()" }
+    EF_H4@{ shape: lin-rect, label: "_ctf_info()" }
+    EF_H5@{ shape: lin-rect, label: "_ctf_persist()" }
+    EF_H6@{ shape: lin-rect, label: "_ctf_write_box_env()" }
+    EF_H7@{ shape: lin-rect, label: "_ctf_lookup_platform_name()" }
 
+    %% --- Functions: ctf-env-functions.sh (Public Commands) ------------------
+    EF_P1@{ shape: lin-rect, label: "set-address()" }
+    EF_P2@{ shape: lin-rect, label: "set-env()" }
+    EF_P3@{ shape: lin-rect, label: "set-platform()" }
+    EF_P4@{ shape: lin-rect, label: "set-box()" }
+    EF_P5@{ shape: lin-rect, label: "ctf-status()" }
+    EF_P6@{ shape: lin-rect, label: "ctf-clear()" }
+    EF_P7@{ shape: lin-rect, label: "ctf-help()" }
 
-	%% Shape Guidelines
-	%% - Rectangles (rect) for scripts
-	%% - Line-Rect (lin-rect) for functions
-	%% - Flag (flag) for script arguments
-	%% - Bow-Rectangles (bow-rect0) for script level variables
-	%% - Curved Trapezoid (curve-trap) for function level variables
-	%% - Parallelograms (parallelogram) for inputs/outputs
-	%% - Cylinders (cylinder) for databases/storage
-	%% - Hexagons (hexagon) for processes/operations
-	%% - Diamonds (diamond) for decision points
-	%% - Ovals (oval) for start points
-	%% - Double Circle (doublecircle) for end points
-    %% - Doc (doc) for file names
-	%% - Flipped Triangle (flip-tri) for symlinks.
+    %% --- Script-level variables: ctf-env-functions.sh -----------------------
+    EF_SV1@{ shape: bow-rect, label: "_CTF_HOME" }
+    EF_SV2@{ shape: bow-rect, label: "REAL_USER" }
+    EF_SV3@{ shape: bow-rect, label: "CTF_REPO_DIR" }
+    EF_SV4@{ shape: bow-rect, label: "CTF_BASE" }
+    EF_SV5@{ shape: bow-rect, label: "_CTF_BOX_DIRS[ ]" }
+    EF_SV6@{ shape: bow-rect, label: "KNOWN_PLATFORMS[ ]" }
+    EF_SV7@{ shape: bow-rect, label: "ADDRESS" }
+    EF_SV8@{ shape: bow-rect, label: "PLATFORM" }
+    EF_SV9@{ shape: bow-rect, label: "BOXNAME" }
+    EF_SV10@{ shape: bow-rect, label: "BOX_DIR" }
+    EF_SV11@{ shape: bow-rect, label: "_CTF_RED / _CTF_YELLOW / _CTF_GREEN" }
+    EF_SV12@{ shape: bow-rect, label: "_CTF_CYAN / _CTF_BOLD / _CTF_DIM / _CTF_RESET" }
 
+    %% --- Function-local variables: _ctf_persist() ---------------------------
+    EF_H5_V1@{ shape: curv-trap, label: "tmp" }
 
+    %% --- Function-local variables: _ctf_lookup_platform_name() -------------
+    EF_H7_V1@{ shape: curv-trap, label: "code" }
 
+    %% --- Function-local variables: set-address() ----------------------------
+    EF_P1_V1@{ shape: curv-trap, label: "new_ip" }
+    EF_P1_V2@{ shape: curv-trap, label: "octets[ ]" }
+    EF_P1_V3@{ shape: curv-trap, label: "old" }
 
-	%% Subgraph - Script: ctf-env-functions.sh
-	subgraph ctf-env-functions.sh [ctf-env-functions.sh]
-	end
+    %% --- Function-local variables: set-env() --------------------------------
+    EF_P2_V1@{ shape: curv-trap, label: "mode" }
+    EF_P2_V2@{ shape: curv-trap, label: "dev_path" }
+    EF_P2_V3@{ shape: curv-trap, label: "prod_path" }
+    EF_P2_V4@{ shape: curv-trap, label: "target_path" }
+    EF_P2_V5@{ shape: curv-trap, label: "old" }
 
-	%% Subgraph - Script: ctf-install.sh
-	subgraph ctf-install.sh [ctf-install.sh]
-	end
+    %% --- Function-local variables: set-platform() ---------------------------
+    EF_P3_V1@{ shape: curv-trap, label: "new_platform" }
+    EF_P3_V2@{ shape: curv-trap, label: "codes[ ]" }
+    EF_P3_V3@{ shape: curv-trap, label: "known" }
+    EF_P3_V4@{ shape: curv-trap, label: "old" }
+    EF_P3_V5@{ shape: curv-trap, label: "full_name" }
+    EF_P3_V6@{ shape: curv-trap, label: "old_name" }
+    EF_P3_V7@{ shape: curv-trap, label: "pdir" }
 
-	%% Subgraph - Script: ctf-sync.sh
-	subgraph ctf-sync.sh [ctf-sync.sh]
-	end
+    %% --- Function-local variables: set-box() --------------------------------
+    EF_P4_V1@{ shape: curv-trap, label: "new_box" }
+    EF_P4_V2@{ shape: curv-trap, label: "old" }
+    EF_P4_V3@{ shape: curv-trap, label: "use_sudo" }
+
+    %% --- Function-local variables: ctf-status() -----------------------------
+    EF_P5_V1@{ shape: curv-trap, label: "platform_display" }
+    EF_P5_V2@{ shape: curv-trap, label: "full_name" }
+    EF_P5_V3@{ shape: curv-trap, label: "box_display" }
+    EF_P5_V4@{ shape: curv-trap, label: "address_display" }
+    EF_P5_V5@{ shape: curv-trap, label: "dir_display" }
+    EF_P5_V6@{ shape: curv-trap, label: "env_label" }
+    EF_P5_V7@{ shape: curv-trap, label: "mode_source" }
+
+    %% --- Function-local variables: set-platform() — confirm -----------------
+    EF_P3_V8@{ shape: curv-trap, label: "confirm" }
+
+    %% --- Function-local variables: ctf-clear() ------------------------------
+    EF_P6_V1@{ shape: curv-trap, label: "confirm" }
+
+    %% --- Function-local variables: ctf-help() -------------------------------
+    EF_P7_V1@{ shape: curv-trap, label: "code" }
+    EF_P7_V2@{ shape: curv-trap, label: "name" }
+
+    %% --- Functions: ctf-install.sh ------------------------------------------
+    IN_F1@{ shape: lin-rect, label: "show_help()" }
+    IN_F2@{ shape: lin-rect, label: "run_dependency_check()" }
+    IN_F3@{ shape: lin-rect, label: "run_backup()" }
+    IN_F4@{ shape: lin-rect, label: "run_sync()" }
+    IN_F5@{ shape: lin-rect, label: "run_deploy_env()" }
+    IN_F6@{ shape: lin-rect, label: "run_patch_zshrc()" }
+    IN_F7@{ shape: lin-rect, label: "run_build_directories()" }
+    IN_F8@{ shape: lin-rect, label: "run_symlinks()" }
+
+    %% --- Script-level variables: ctf-install.sh -----------------------------
+    IN_SV1@{ shape: bow-rect, label: "_CTF_HOME" }
+    IN_SV2@{ shape: bow-rect, label: "REAL_USER" }
+    IN_SV3@{ shape: bow-rect, label: "FORCE_PROD" }
+    IN_SV4@{ shape: bow-rect, label: "CHECK_ONLY" }
+    IN_SV5@{ shape: bow-rect, label: "SHOW_HELP" }
+    IN_SV6@{ shape: bow-rect, label: "SKIP_CONFIRM" }
+    IN_SV7@{ shape: bow-rect, label: "REPO_DIR" }
+    IN_SV8@{ shape: bow-rect, label: "CTF_BASE" }
+    IN_SV9@{ shape: bow-rect, label: "CTF_ENV_FILE" }
+    IN_SV10@{ shape: bow-rect, label: "CTF_ENV_SOURCE" }
+    IN_SV11@{ shape: bow-rect, label: "BACKUP_DIR" }
+    IN_SV12@{ shape: bow-rect, label: "ZSHRC" }
+    IN_SV13@{ shape: bow-rect, label: "SYMLINK_DIR" }
+    IN_SV14@{ shape: bow-rect, label: "SETUP_DIR" }
+    IN_SV15@{ shape: bow-rect, label: "KNOWN_PLATFORMS[ ]" }
+    IN_SV16@{ shape: bow-rect, label: "REQUIRED_TOOLS[ ]" }
+    IN_SV17@{ shape: bow-rect, label: "RED / YELLOW / GREEN" }
+    IN_SV18@{ shape: bow-rect, label: "CYAN / BOLD / DIM / RESET" }
+    IN_SV19@{ shape: bow-rect, label: "confirm" }
+
+    %% --- Function-local variables: run_dependency_check() ------------------
+    IN_F2_V1@{ shape: curv-trap, label: "missing[ ]" }
+    IN_F2_V2@{ shape: curv-trap, label: "cmd" }
+    IN_F2_V3@{ shape: curv-trap, label: "rest / rest2" }
+    IN_F2_V4@{ shape: curv-trap, label: "name" }
+    IN_F2_V5@{ shape: curv-trap, label: "pkg" }
+    IN_F2_V6@{ shape: curv-trap, label: "vfield" }
+    IN_F2_V7@{ shape: curv-trap, label: "vflag" }
+    IN_F2_V8@{ shape: curv-trap, label: "version" }
+    IN_F2_V9@{ shape: curv-trap, label: "entry" }
+
+    %% --- Function-local variables: run_backup() -----------------------------
+    IN_F3_V1@{ shape: curv-trap, label: "timestamp" }
+    IN_F3_V2@{ shape: curv-trap, label: "backup_file" }
+    IN_F3_V3@{ shape: curv-trap, label: "backups[ ]" }
+    IN_F3_V4@{ shape: curv-trap, label: "backup_count" }
+
+    %% --- Function-local variables: run_sync() -------------------------------
+    IN_F4_V1@{ shape: curv-trap, label: "sync_flags[ ]" }
+    IN_F4_V2@{ shape: curv-trap, label: "script_dir" }
+
+    %% --- Function-local variables: run_build_directories() -----------------
+    IN_F7_V1@{ shape: curv-trap, label: "use_sudo" }
+    IN_F7_V2@{ shape: curv-trap, label: "code" }
+    IN_F7_V3@{ shape: curv-trap, label: "name" }
+    IN_F7_V4@{ shape: curv-trap, label: "pdir" }
+    IN_F7_V5@{ shape: curv-trap, label: "entry" }
+
+    %% --- Function-local variables: run_symlinks() ---------------------------
+    IN_F8_V1@{ shape: curv-trap, label: "count" }
+    IN_F8_V2@{ shape: curv-trap, label: "symlink_denylist[ ]" }
+    IN_F8_V3@{ shape: curv-trap, label: "filename" }
+    IN_F8_V4@{ shape: curv-trap, label: "skip" }
+    IN_F8_V5@{ shape: curv-trap, label: "linkname" }
+    IN_F8_V6@{ shape: curv-trap, label: "linkpath" }
+    IN_F8_V7@{ shape: curv-trap, label: "script" }
+
+    %% --- Script-level variables: ctf-sync.sh --------------------------------
+    SY_SV1@{ shape: bow-rect, label: "REPO_URL" }
+    SY_SV2@{ shape: bow-rect, label: "_CTF_HOME" }
+    SY_SV3@{ shape: bow-rect, label: "REAL_USER" }
+    SY_SV4@{ shape: bow-rect, label: "REPO_OWNER" }
+    SY_SV5@{ shape: bow-rect, label: "FORCE_PROD" }
+    SY_SV6@{ shape: bow-rect, label: "SHOW_HELP" }
+    SY_SV7@{ shape: bow-rect, label: "INSTALL_DIR" }
+    SY_SV8@{ shape: bow-rect, label: "custom_dir" }
+    SY_SV9@{ shape: bow-rect, label: "CURRENT_BRANCH" }
+    SY_SV10@{ shape: bow-rect, label: "PULL_OUTPUT" }
+    SY_SV11@{ shape: bow-rect, label: "PULL_EXIT" }
+    SY_SV12@{ shape: bow-rect, label: "conflict_files[ ]" }
+    SY_SV13@{ shape: bow-rect, label: "recover_failed" }
+    SY_SV14@{ shape: bow-rect, label: "CLONE_EXIT" }
+    SY_SV15@{ shape: bow-rect, label: "CHOWN_EXIT" }
+    SY_SV16@{ shape: bow-rect, label: "script_count" }
+    SY_SV17@{ shape: bow-rect, label: "CTF_ENV_SOURCE" }
+    SY_SV18@{ shape: bow-rect, label: "CTF_ENV_FILE" }
+    SY_SV19@{ shape: bow-rect, label: "deploy_ok" }
+    SY_SV20@{ shape: bow-rect, label: "RED / YELLOW / GREEN" }
+    SY_SV21@{ shape: bow-rect, label: "CYAN / BOLD / DIM / RESET" }
+    SY_SV22@{ shape: bow-rect, label: "recovery_confirm" }
+    SY_SV23@{ shape: bow-rect, label: "file" }
+    SY_SV24@{ shape: bow-rect, label: "script" }
+
+    %% --- File nodes ----------------------------------------------------------
+    F_CTF_ENV@{ shape: doc, label: "~/.ctf_env" }
+    F_CTF_ENV_MODE@{ shape: doc, label: "~/.ctf_env_mode" }
+    F_CTF_ENV_BACKUP@{ shape: doc, label: "~/.ctf_backups/.ctf_env.timestamp" }
+    F_ZSHRC@{ shape: doc, label: "~/.zshrc" }
+    F_BOX_ENV@{ shape: doc, label: "BOX_DIR/.env" }
+    F_BOX_NOTES@{ shape: doc, label: "BOX_DIR/notes/notes.md" }
+    F_EF_SRC@{ shape: doc, label: "setup/ctf-env-functions.sh" }
+    F_SYMLINK@{ shape: flip-tri, label: "/usr/local/bin/ctf-*" }
+    F_GITHUB@{ shape: lin-cyl, label: "github.com/Ghost-Glitch04/CTF_Public" }
+
+    %% --- Environment / OS inputs (external sources) -------------------------
+    ENV_SUDO_USER@{ shape: circle, label: "$SUDO_USER" }
+    ENV_HOME@{ shape: circle, label: "$HOME" }
+    ENV_USER@{ shape: circle, label: "$USER" }
+    ENV_CTF_REPO_DIR@{ shape: circle, label: "$CTF_REPO_DIR (env override)" }
+    ENV_CTF_BASE_DIR@{ shape: circle, label: "$CTF_BASE_DIR (env override)" }
+
+    %% =========================================================================
+    %% SHAPE GUIDELINES
+    %% - Rectangles     (rect)         Scripts
+    %% - Line-Rect      (lin-rect)     Functions
+    %% - Flag           (flag)         Script flags / function arguments
+    %% - Bow-Rect       (bow-rect)     Script-level variables
+    %% - Curv-Trap      (curv-trap)    Function-local variables
+    %% - Parallelogram  (lean-r)       Inputs / outputs
+    %% - Cylinder       (cylinder)     Databases / storage
+    %% - Hexagon        (hexagon)      Processes / operations
+    %% - Diamond        (diamond)      Decision points
+    %% - Circle         (circle)       Start points / external env inputs
+    %% - Double Circle  (doublecircle) End points
+    %% - Doc            (doc)          File names
+    %% - Flip-Triangle  (flip-tri)     Symlinks
+    %% - Lined Cylinder (lin-cyl)      GitHub Repo
+    %% =========================================================================
+
+    %% =========================================================================
+    %% CONNECTION GUIDELINES
+    %% - Solid Line      (-->)           Direct data flow / assignment
+    %% - Dotted Line     (-. label .->)  Indirect / conditional flow
+    %% - Thick Line      (==>)           Primary flow / main path
+    %% - Write File      (--|WRITE|-->)  Writes to a file
+    %% - Read File       (--|READ|-->)   Reads from a file
+    %% =========================================================================
+
+    %% =========================================================================
+    %% SUBGRAPH — ctf-env-functions.sh
+    %% =========================================================================
+    subgraph ctf-env-functions.sh [ctf-env-functions.sh]
+
+        subgraph EF_ScriptVars [Script-Level Variables]
+            EF_SV1
+            EF_SV2
+            EF_SV3
+            EF_SV4
+            EF_SV5
+            EF_SV6
+            EF_SV7
+            EF_SV8
+            EF_SV9
+            EF_SV10
+            EF_SV11
+            EF_SV12
+        end
+
+        subgraph Private_Helpers [Private Helpers]
+            EF_H1
+            EF_H2
+            EF_H3
+            EF_H4
+
+            subgraph EF_H5_scope [_ctf_persist — locals]
+                EF_H5
+                EF_H5_V1
+            end
+
+            EF_H6
+
+            subgraph EF_H7_scope [_ctf_lookup_platform_name — locals]
+                EF_H7
+                EF_H7_V1
+            end
+        end
+
+        subgraph Public_Commands [Public Commands]
+
+            subgraph EF_P1_scope [set-address — locals]
+                EF_P1
+                EF_A1
+                EF_P1_V1
+                EF_P1_V2
+                EF_P1_V3
+            end
+
+            subgraph EF_P2_scope [set-env — locals]
+                EF_P2
+                EF_A2
+                EF_P2_V1
+                EF_P2_V2
+                EF_P2_V3
+                EF_P2_V4
+                EF_P2_V5
+            end
+
+            subgraph EF_P3_scope [set-platform — locals]
+                EF_P3
+                EF_A3
+                EF_P3_V1
+                EF_P3_V2
+                EF_P3_V3
+                EF_P3_V4
+                EF_P3_V5
+                EF_P3_V6
+                EF_P3_V7
+                EF_P3_V8
+            end
+
+            subgraph EF_P4_scope [set-box — locals]
+                EF_P4
+                EF_A4
+                EF_P4_V1
+                EF_P4_V2
+                EF_P4_V3
+            end
+
+            subgraph EF_P5_scope [ctf-status — locals]
+                EF_P5
+                EF_P5_V1
+                EF_P5_V2
+                EF_P5_V3
+                EF_P5_V4
+                EF_P5_V5
+                EF_P5_V6
+                EF_P5_V7
+            end
+
+            subgraph EF_P6_scope [ctf-clear — locals]
+                EF_P6
+                EF_P6_V1
+            end
+
+            subgraph EF_P7_scope [ctf-help — locals]
+                EF_P7
+                EF_P7_V1
+                EF_P7_V2
+            end
+
+        end
+    end
+
+    %% =========================================================================
+    %% SUBGRAPH — ctf-install.sh
+    %% =========================================================================
+    subgraph ctf-install.sh [ctf-install.sh]
+
+        subgraph IN_Flags [Flags]
+            IN_A1
+            IN_A2
+            IN_A3
+            IN_A4
+        end
+
+        subgraph IN_ScriptVars [Script-Level Variables]
+            IN_SV1
+            IN_SV2
+            IN_SV3
+            IN_SV4
+            IN_SV5
+            IN_SV6
+            IN_SV7
+            IN_SV8
+            IN_SV9
+            IN_SV10
+            IN_SV11
+            IN_SV12
+            IN_SV13
+            IN_SV14
+            IN_SV15
+            IN_SV16
+            IN_SV17
+            IN_SV18
+            IN_SV19
+        end
+
+        IN_F1
+
+        subgraph IN_F2_scope [run_dependency_check — locals]
+            IN_F2
+            IN_F2_V1
+            IN_F2_V2
+            IN_F2_V3
+            IN_F2_V4
+            IN_F2_V5
+            IN_F2_V6
+            IN_F2_V7
+            IN_F2_V8
+            IN_F2_V9
+        end
+
+        subgraph IN_F3_scope [run_backup — locals]
+            IN_F3
+            IN_F3_V1
+            IN_F3_V2
+            IN_F3_V3
+            IN_F3_V4
+        end
+
+        subgraph IN_F4_scope [run_sync — locals]
+            IN_F4
+            IN_F4_V1
+            IN_F4_V2
+        end
+
+        IN_F5
+
+        IN_F6
+
+        subgraph IN_F7_scope [run_build_directories — locals]
+            IN_F7
+            IN_F7_V1
+            IN_F7_V2
+            IN_F7_V3
+            IN_F7_V4
+            IN_F7_V5
+        end
+
+        subgraph IN_F8_scope [run_symlinks — locals]
+            IN_F8
+            IN_F8_V1
+            IN_F8_V2
+            IN_F8_V3
+            IN_F8_V4
+            IN_F8_V5
+            IN_F8_V6
+            IN_F8_V7
+        end
+
+    end
+
+    %% =========================================================================
+    %% SUBGRAPH — ctf-sync.sh
+    %% =========================================================================
+    subgraph ctf-sync.sh [ctf-sync.sh]
+
+        subgraph SY_Flags [Flags]
+            SY_A1
+            SY_A2
+        end
+
+        subgraph SY_ScriptVars [Script-Level Variables]
+            SY_SV1
+            SY_SV2
+            SY_SV3
+            SY_SV4
+            SY_SV5
+            SY_SV6
+            SY_SV7
+            SY_SV8
+            SY_SV9
+            SY_SV10
+            SY_SV11
+            SY_SV12
+            SY_SV13
+            SY_SV14
+            SY_SV15
+            SY_SV16
+            SY_SV17
+            SY_SV18
+            SY_SV19
+            SY_SV20
+            SY_SV21
+            SY_SV22
+            SY_SV23
+            SY_SV24
+        end
+
+    end
+
+    %% =========================================================================
+    %% FILE I/O CONNECTIONS
+    %% =========================================================================
+
+    %% --- ctf-env-functions.sh: script body -----------------------------------
+    ctf-env-functions.sh --|READ|--> F_CTF_ENV_MODE
+    ctf-env-functions.sh --|READ|--> F_CTF_ENV
+
+    %% --- _ctf_persist(): atomic rewrite of ~/.ctf_env via tmp ---------------
+    EF_H5 --|READ|--> F_CTF_ENV
+    EF_H5 --|WRITE|--> F_CTF_ENV
+
+    %% --- _ctf_write_box_env(): writes BOX_DIR/.env --------------------------
+    EF_H6 --|WRITE|--> F_BOX_ENV
+
+    %% --- set-env(): writes ~/.ctf_env_mode, then re-sources ~/.ctf_env ------
+    EF_P2 --|WRITE|--> F_CTF_ENV_MODE
+    EF_P2 --|READ|--> F_CTF_ENV
+
+    %% --- ctf-status(): reads ~/.ctf_env_mode existence for display ----------
+    EF_P5 --|READ|--> F_CTF_ENV_MODE
+
+    %% --- set-box(): writes BOX_DIR/notes/notes.md ---------------------------
+    EF_P4 --|WRITE|--> F_BOX_NOTES
+
+    %% --- ctf-help(): reads ~/.ctf_env_mode existence for display ------------
+    EF_P7 --|READ|--> F_CTF_ENV_MODE
+
+    %% --- ctf-install.sh: script body reads ctf-env-functions.sh for KNOWN_PLATFORMS
+    ctf-install.sh --|READ|--> F_EF_SRC
+
+    %% --- run_backup(): reads ~/.ctf_env, writes timestamped backup ----------
+    IN_F3 --|READ|--> F_CTF_ENV
+    IN_F3 --|WRITE|--> F_CTF_ENV_BACKUP
+
+    %% --- run_deploy_env(): reads ctf-env-functions.sh, writes ~/.ctf_env ----
+    IN_F5 --|READ|--> F_EF_SRC
+    IN_F5 --|WRITE|--> F_CTF_ENV
+
+    %% --- run_patch_zshrc(): reads ~/.zshrc, appends source line -------------
+    IN_F6 --|READ|--> F_ZSHRC
+    IN_F6 --|WRITE|--> F_ZSHRC
+
+    %% --- run_symlinks(): reads setup/*.sh, writes symlinks ------------------
+    IN_F8 --|READ|--> F_EF_SRC
+    IN_F8 --|WRITE|--> F_SYMLINK
+
+    %% --- ctf-sync.sh: git clone/pull from GitHub ----------------------------
+    F_GITHUB --|READ|--> ctf-sync.sh
+    ctf-sync.sh --|WRITE|--> F_GITHUB
+
+    %% --- ctf-sync.sh: deploy step -------------------------------------------
+    ctf-sync.sh --|READ|--> F_EF_SRC
+    ctf-sync.sh --|WRITE|--> F_CTF_ENV
+
+    %% =========================================================================
+    %% DATAFLOW — ctf-env-functions.sh
+    %% =========================================================================
+
+    %% --- User resolution: OS env → _CTF_HOME, REAL_USER ---------------------
+    %% sudo path: SUDO_USER → getent → _CTF_HOME; SUDO_USER → REAL_USER
+    ENV_SUDO_USER --> EF_SV1
+    ENV_SUDO_USER --> EF_SV2
+    %% normal path: $HOME → _CTF_HOME; $USER → REAL_USER
+    ENV_HOME --> EF_SV1
+    ENV_USER --> EF_SV2
+
+    %% --- CTF_REPO_DIR resolution at startup ---------------------------------
+    %% Path 1: ~/.ctf_env_mode sourced → sets CTF_REPO_DIR
+    F_CTF_ENV_MODE -. source .-> EF_SV3
+    %% Path 2: _CTF_HOME used to construct dev path
+    EF_SV1 --> EF_SV3
+    %% Env override: pre-exported CTF_REPO_DIR skips all detection
+    ENV_CTF_REPO_DIR -. override .-> EF_SV3
+
+    %% --- CTF_BASE resolution -------------------------------------------------
+    ENV_CTF_BASE_DIR -. override .-> EF_SV4
+
+    %% --- set-address(): arg → new_ip → octets[] → ADDRESS -------------------
+    EF_A1 --> EF_P1_V1
+    EF_P1_V1 --> EF_P1_V2
+    EF_P1_V1 --> EF_P1_V3
+    EF_SV7 --> EF_P1_V3
+    EF_P1_V1 --> EF_SV7
+
+    %% --- set-env(): arg → mode → target_path → CTF_REPO_DIR + mode file ----
+    EF_A2 --> EF_P2_V1
+    EF_SV1 --> EF_P2_V2
+    EF_P2_V1 --> EF_P2_V4
+    EF_P2_V2 --> EF_P2_V4
+    EF_P2_V3 --> EF_P2_V4
+    EF_P2_V4 --> EF_SV3
+    EF_SV3 --> EF_P2_V5
+
+    %% --- set-platform(): arg → new_platform → PLATFORM, pdir, BOX_DIR ------
+    EF_A3 --> EF_P3_V1
+    EF_SV6 --> EF_P3_V2
+    EF_SV6 --> EF_P3_V3
+    EF_P3_V1 --> EF_SV8
+    EF_P3_V1 --> EF_P3_V7
+    EF_SV4 --> EF_P3_V7
+    EF_SV8 --> EF_P3_V4
+    EF_P3_V1 --> EF_P3_V5
+    EF_SV8 --> EF_P3_V6
+    %% PLATFORM + BOXNAME + CTF_BASE → BOX_DIR (when BOXNAME already set)
+    EF_SV8 --> EF_SV10
+    EF_SV9 --> EF_SV10
+    EF_SV4 --> EF_SV10
+
+    %% --- set-box(): arg → new_box → BOXNAME → BOX_DIR -----------------------
+    EF_A4 --> EF_P4_V1
+    EF_P4_V1 --> EF_SV9
+    EF_SV9 --> EF_P4_V2
+    EF_SV4 --> EF_SV10
+    EF_SV4 --> EF_P4_V3
+
+    %% --- _ctf_lookup_platform_name(): KNOWN_PLATFORMS → code → return -------
+    EF_SV6 --> EF_H7_V1
+
+    %% --- ctf-status(): session vars → display locals ------------------------
+    EF_SV8 --> EF_P5_V1
+    EF_SV6 --> EF_P5_V2
+    EF_SV9 --> EF_P5_V3
+    EF_SV7 --> EF_P5_V4
+    EF_SV10 --> EF_P5_V5
+    EF_SV3 --> EF_P5_V6
+    EF_SV1 --> EF_P5_V6
+
+    %% --- set-platform(): confirm ← read interactive input -------------------
+    %% confirm reads from stdin when !$known; no dataflow parent, gates return path only
+
+    %% --- ctf-clear(): confirm ← read interactive input ----------------------
+    %% (no dataflow in; confirm is read from stdin, used to guard session clear)
+
+    %% --- _ctf_persist(): session vars → rewrite ~/.ctf_env ------------------
+    EF_SV7 --> EF_H5
+    EF_SV8 --> EF_H5
+    EF_SV9 --> EF_H5
+    EF_SV10 --> EF_H5
+
+    %% --- _ctf_write_box_env(): session vars → BOX_DIR/.env ------------------
+    EF_SV7 --> EF_H6
+    EF_SV8 --> EF_H6
+    EF_SV9 --> EF_H6
+    EF_SV10 --> EF_H6
+
+    %% =========================================================================
+    %% DATAFLOW — ctf-install.sh
+    %% =========================================================================
+
+    %% --- User resolution: OS env → _CTF_HOME, REAL_USER ---------------------
+    ENV_SUDO_USER --> IN_SV1
+    ENV_SUDO_USER --> IN_SV2
+    ENV_HOME --> IN_SV1
+    ENV_USER --> IN_SV2
+
+    %% --- Flags → boolean vars ------------------------------------------------
+    IN_A1 --> IN_SV3
+    IN_A2 --> IN_SV4
+    IN_A3 --> IN_SV6
+    IN_A4 --> IN_SV5
+
+    %% --- FORCE_PROD → REPO_DIR (bypass detection) ----------------------------
+    IN_SV3 --> IN_SV7
+
+    %% --- Detection chain → REPO_DIR -----------------------------------------
+    ENV_CTF_REPO_DIR -. override .-> IN_SV7
+    IN_SV1 --> IN_SV7
+
+    %% --- REPO_DIR → CTF_ENV_SOURCE, SETUP_DIR --------------------------------
+    IN_SV7 --> IN_SV10
+    IN_SV7 --> IN_SV14
+
+    %% --- _CTF_HOME → path vars -----------------------------------------------
+    IN_SV1 --> IN_SV9
+    IN_SV1 --> IN_SV11
+    IN_SV1 --> IN_SV12
+
+    %% --- CTF_BASE_DIR env override → CTF_BASE --------------------------------
+    ENV_CTF_BASE_DIR -. override .-> IN_SV8
+
+    %% --- F_EF_SRC (source subshell) → KNOWN_PLATFORMS[] ---------------------
+    F_EF_SRC --> IN_SV15
+
+    %% --- FORCE_PROD → sync_flags[] passed to run_sync() ----------------------
+    IN_SV3 --> IN_F4_V1
+
+    %% --- run_backup(): BACKUP_DIR + timestamp → backup_file -----------------
+    IN_SV11 --> IN_F3_V2
+    IN_F3_V1 --> IN_F3_V2
+    IN_F3_V2 --> IN_F3_V3
+    IN_F3_V3 --> IN_F3_V4
+
+    %% --- run_build_directories(): CTF_BASE → use_sudo, pdir -----------------
+    IN_SV8 --> IN_F7_V1
+    IN_SV15 --> IN_F7_V2
+    IN_SV15 --> IN_F7_V3
+    IN_SV8 --> IN_F7_V4
+    IN_F7_V2 --> IN_F7_V4
+
+    %% --- run_symlinks(): SETUP_DIR + SYMLINK_DIR → linkpath ------------------
+    IN_SV14 --> IN_F8_V3
+    IN_F8_V3 --> IN_F8_V5
+    IN_SV13 --> IN_F8_V6
+    IN_F8_V5 --> IN_F8_V6
+
+    %% --- run_dependency_check(): entry loop iterates REQUIRED_TOOLS ---------
+    IN_SV16 --> IN_F2_V9
+    IN_F2_V9 --> IN_F2_V2
+    IN_F2_V9 --> IN_F2_V4
+    IN_F2_V9 --> IN_F2_V5
+    IN_F2_V9 --> IN_F2_V6
+
+    %% --- run_dependency_check(): REQUIRED_TOOLS → per-tool locals -----------
+    IN_SV16 --> IN_F2_V2
+    IN_SV16 --> IN_F2_V4
+    IN_SV16 --> IN_F2_V5
+    IN_SV16 --> IN_F2_V6
+    IN_F2_V2 --> IN_F2_V7
+    IN_F2_V7 --> IN_F2_V8
+
+    %% --- run_build_directories(): entry iterates KNOWN_PLATFORMS → code/name/pdir
+    IN_SV15 --> IN_F7_V5
+    IN_F7_V5 --> IN_F7_V2
+    IN_F7_V5 --> IN_F7_V3
+    IN_F7_V5 --> IN_F7_V4
+
+    %% --- run_symlinks(): script iterates SETUP_DIR/*.sh → filename ----------
+    IN_SV14 --> IN_F8_V7
+    IN_F8_V7 --> IN_F8_V3
+
+    %% =========================================================================
+    %% DATAFLOW — ctf-sync.sh
+    %% =========================================================================
+
+    %% --- User resolution: OS env → _CTF_HOME, REAL_USER, REPO_OWNER ---------
+    ENV_SUDO_USER --> SY_SV2
+    ENV_SUDO_USER --> SY_SV3
+    ENV_HOME --> SY_SV2
+    ENV_USER --> SY_SV3
+    SY_SV3 --> SY_SV4
+
+    %% --- Flags → boolean vars ------------------------------------------------
+    SY_A1 --> SY_SV5
+    SY_A2 --> SY_SV6
+
+    %% --- FORCE_PROD + detection chain → INSTALL_DIR -------------------------
+    SY_SV5 --> SY_SV7
+    ENV_CTF_REPO_DIR -. override .-> SY_SV7
+    SY_SV2 --> SY_SV7
+    SY_SV2 --> SY_SV8
+    SY_SV8 --> SY_SV7
+
+    %% --- REPO_URL + INSTALL_DIR → git clone → CLONE_EXIT --------------------
+    SY_SV1 --> SY_SV14
+    SY_SV7 --> SY_SV14
+
+    %% --- INSTALL_DIR → git pull → PULL_OUTPUT → PULL_EXIT -------------------
+    SY_SV7 --> SY_SV9
+    SY_SV9 --> SY_SV10
+    SY_SV10 --> SY_SV11
+    SY_SV10 --> SY_SV12
+    SY_SV12 --> SY_SV13
+
+    %% --- INSTALL_DIR + REPO_OWNER → chown → CHOWN_EXIT ----------------------
+    SY_SV7 --> SY_SV15
+    SY_SV4 --> SY_SV15
+
+    %% --- INSTALL_DIR → find + chmod → script_count --------------------------
+    SY_SV7 --> SY_SV16
+
+    %% --- INSTALL_DIR → CTF_ENV_SOURCE; _CTF_HOME → CTF_ENV_FILE -------------
+    SY_SV7 --> SY_SV17
+    SY_SV2 --> SY_SV18
+
+    %% --- CTF_ENV_SOURCE + CTF_ENV_FILE → cp → deploy_ok ---------------------
+    SY_SV17 --> SY_SV19
+    SY_SV18 --> SY_SV19
+
+    %% --- conflict_files[] → file loop var; INSTALL_DIR → script loop var ----
+    SY_SV12 --> SY_SV23
+    SY_SV7 --> SY_SV24
