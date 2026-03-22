@@ -455,11 +455,16 @@ run_build_directories() {
 
   if [[ ! -d "$CTF_BASE" ]]; then
     if $use_sudo; then
-      sudo mkdir -p "$CTF_BASE"
+      if sudo mkdir -p "$CTF_BASE"; then
+        print_ok "Created: ${BOLD}${CTF_BASE}${RESET}"
+      else
+        print_err "Failed to create ${BOLD}${CTF_BASE}${RESET} — sudo mkdir failed"
+        return 1
+      fi
     else
       mkdir -p "$CTF_BASE"
+      print_ok "Created: ${BOLD}${CTF_BASE}${RESET}"
     fi
-    print_ok "Created: ${BOLD}${CTF_BASE}${RESET}"
   else
     print_skip "${CTF_BASE} already exists"
   fi
@@ -470,11 +475,15 @@ run_build_directories() {
     local pdir="${CTF_BASE}/${code}"
     if [[ ! -d "$pdir" ]]; then
       if $use_sudo; then
-        sudo mkdir -p "$pdir"
+        if sudo mkdir -p "$pdir"; then
+          print_ok "Created: ${BOLD}${pdir}${RESET} ${DIM}(${name})${RESET}"
+        else
+          print_err "Failed to create ${BOLD}${pdir}${RESET} — sudo mkdir failed"
+        fi
       else
         mkdir -p "$pdir"
+        print_ok "Created: ${BOLD}${pdir}${RESET} ${DIM}(${name})${RESET}"
       fi
-      print_ok "Created: ${BOLD}${pdir}${RESET} ${DIM}(${name})${RESET}"
     else
       print_skip "${pdir} already exists"
     fi
@@ -484,8 +493,12 @@ run_build_directories() {
   # Only runs when sudo was required (fresh install with root-owned parent).
   # On re-runs the user already owns everything — chown is unnecessary.
   if $use_sudo; then
-    sudo chown -R "$USER":"$USER" "$CTF_BASE"
-    print_ok "Ownership set: ${BOLD}${CTF_BASE}${RESET} → ${USER}"
+    if sudo chown -R "$USER":"$USER" "$CTF_BASE"; then
+      print_ok "Ownership set: ${BOLD}${CTF_BASE}${RESET} → ${USER}"
+    else
+      print_err "Failed to set ownership on ${BOLD}${CTF_BASE}${RESET} — sudo chown failed"
+      print_info "Fix with: ${BOLD}sudo chown -R ${USER}:${USER} ${CTF_BASE}${RESET}"
+    fi
   fi
 }
 
@@ -529,16 +542,22 @@ run_symlinks() {
     chmod +x "$script"
 
     if [[ -L "$linkpath" ]]; then
-      sudo ln -sf "$script" "$linkpath"
-      print_ok "Updated symlink: ${BOLD}${linkname}${RESET} → ${DIM}${script}${RESET}"
-      (( count++ ))
+      if sudo ln -sf "$script" "$linkpath"; then
+        print_ok "Updated symlink: ${BOLD}${linkname}${RESET} → ${DIM}${script}${RESET}"
+        (( count++ ))
+      else
+        print_err "Failed to update symlink: ${BOLD}${linkname}${RESET} — sudo ln failed"
+      fi
     elif [[ -f "$linkpath" ]]; then
       print_warn "File already exists at ${BOLD}${linkpath}${RESET} — skipping"
       print_info "Remove it manually to allow symlinking: ${BOLD}sudo rm ${linkpath}${RESET}"
     else
-      sudo ln -sf "$script" "$linkpath"
-      print_ok "Created symlink:  ${BOLD}${linkname}${RESET} → ${DIM}${script}${RESET}"
-      (( count++ ))
+      if sudo ln -sf "$script" "$linkpath"; then
+        print_ok "Created symlink:  ${BOLD}${linkname}${RESET} → ${DIM}${script}${RESET}"
+        (( count++ ))
+      else
+        print_err "Failed to create symlink: ${BOLD}${linkname}${RESET} — sudo ln failed"
+      fi
     fi
   done
 

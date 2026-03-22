@@ -229,7 +229,20 @@ _ctf_persist() {
   # will have a clean ~/.ctf_env and sed will find nothing to strip — it is a
   # no-op in that case. Machines set up before the fix are silently healed the
   # first time _ctf_persist runs after updating to this version.
-  while IFS= read -r line; do
+  #
+  # TEACHING NOTE — `|| [[ -n "$line" ]]` handles files without a trailing newline.
+  # (Bug fix #2)
+  #
+  # `while IFS= read -r line` stops when read returns non-zero. read returns
+  # non-zero when it hits EOF — even if it read content into $line. This
+  # means if the file's last line is not terminated with \n, that line is
+  # read into $line but the loop body never executes for it, silently
+  # dropping the last line from the rewritten output.
+  #
+  # Adding `|| [[ -n "$line" ]]` keeps the loop running for one more
+  # iteration when read returns non-zero but $line is non-empty — catching
+  # the unterminated last line and writing it to the temp file.
+  while IFS= read -r line || [[ -n "$line" ]]; do
     case "$line" in
       "export ADDRESS="*)  echo "export ADDRESS=\"${ADDRESS}\""   ;;
       "export PLATFORM="*) echo "export PLATFORM=\"${PLATFORM}\"" ;;
@@ -549,11 +562,17 @@ set-platform() {
     # fragile steps (sudo mkdir + sudo chown) into one reliable step for
     # the common case where the user already owns the workspace root.
     if [[ ! -w "$CTF_BASE" ]]; then
-      sudo mkdir -p "$pdir" && sudo chown -R "${USER}:${USER}" "$pdir"
+      if sudo mkdir -p "$pdir" && sudo chown -R "${USER}:${USER}" "$pdir"; then
+        _ctf_ok "Created: ${_CTF_BOLD}${pdir}${_CTF_RESET}"
+      else
+        _ctf_err "Failed to create ${_CTF_BOLD}${pdir}${_CTF_RESET} — sudo failed"
+        _ctf_info "Fix with: ${_CTF_BOLD}sudo mkdir -p ${pdir} && sudo chown -R ${USER}:${USER} ${pdir}${_CTF_RESET}"
+        return 1
+      fi
     else
       mkdir -p "$pdir"
+      _ctf_ok "Created: ${_CTF_BOLD}${pdir}${_CTF_RESET}"
     fi
-    _ctf_ok "Created: ${_CTF_BOLD}${pdir}${_CTF_RESET}"
   fi
 
   # Update BOX_DIR if a box is already set
@@ -644,11 +663,12 @@ set-box() {
     # TEACHING NOTE — Driving behavior from config arrays.
     # Adding a new workspace folder is one line in _CTF_BOX_DIRS at the top.
     # The loop here doesn't need to change. Data drives behavior.
+    local _mkdir_ok=true
     for subdir in "${_CTF_BOX_DIRS[@]}"; do
       if $use_sudo; then
-        sudo mkdir -p "${BOX_DIR}/${subdir}"
+        sudo mkdir -p "${BOX_DIR}/${subdir}" || _mkdir_ok=false
       else
-        mkdir -p "${BOX_DIR}/${subdir}"
+        mkdir -p "${BOX_DIR}/${subdir}" || _mkdir_ok=false
       fi
     done
 
@@ -657,10 +677,18 @@ set-box() {
     # When use_sudo is true, chown runs immediately after mkdir in one block
     # so there is no gap between creation and ownership correction.
     if $use_sudo; then
-      sudo chown -R "${USER}:${USER}" "$BOX_DIR"
+      if ! sudo chown -R "${USER}:${USER}" "$BOX_DIR"; then
+        _ctf_err "Failed to set ownership on ${_CTF_BOLD}${BOX_DIR}${_CTF_RESET} — sudo chown failed"
+        _ctf_info "Fix with: ${_CTF_BOLD}sudo chown -R ${USER}:${USER} ${BOX_DIR}${_CTF_RESET}"
+        _mkdir_ok=false
+      fi
     fi
 
-    _ctf_ok "Created workspace: ${_CTF_BOLD}${BOX_DIR}${_CTF_RESET}"
+    if $_mkdir_ok; then
+      _ctf_ok "Created workspace: ${_CTF_BOLD}${BOX_DIR}${_CTF_RESET}"
+    else
+      _ctf_err "Workspace creation incomplete — some directories may be missing or root-owned"
+    fi
     _ctf_info "Folders: ${_CTF_DIM}${_CTF_BOX_DIRS[*]}${_CTF_RESET}"
 
     # Drop a starter notes file
