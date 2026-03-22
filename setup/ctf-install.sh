@@ -540,6 +540,22 @@ run_deploy_env() {
   # that never happened.
   cp "$CTF_ENV_SOURCE" "$CTF_ENV_FILE" \
     || { print_err "Deploy failed — could not write: ${BOLD}${CTF_ENV_FILE}${RESET}"; return 1; }
+
+  # TEACHING NOTE — Ownership fix for sudo-safety.
+  #
+  # When ctf-install runs under sudo (common for production installs that
+  # need to write to /opt), the `cp` above creates ~/.ctf_env owned by root.
+  # The user's shell then fails to source it ("permission denied") because
+  # the file is root-owned with default permissions that may exclude other
+  # users.
+  #
+  # Explicitly chowning to REAL_USER ensures the deployed file is always
+  # owned by the intended user, regardless of who ran the installer. This
+  # mirrors the ownership fix already applied to /opt/CTF in
+  # run_build_directories — every user-home artifact needs this treatment
+  # when the installer can run under sudo.
+  chown "${REAL_USER}:${REAL_USER}" "$CTF_ENV_FILE" 2>/dev/null
+
   print_ok "Deployed: ${BOLD}${CTF_ENV_SOURCE}${RESET} → ${BOLD}${CTF_ENV_FILE}${RESET}"
   print_info "To update session commands: edit ctf-env-functions.sh, push, run ${BOLD}ctf-sync${RESET}"
   print_info "Then reload with: ${BOLD}source ~/.ctf_env${RESET} — no reinstall needed."
