@@ -26,7 +26,7 @@
 #   ./full-removal.sh --backups    # also remove ~/.ctf_backups
 #   ./full-removal.sh --help       # show this message
 #
-# TEACHING NOTE — Why a dedicated removal script?
+# TEACHING NOTE — Why a dedicated removal script?sudo ~/Desktop/full-removal.sh --yes
 #   Manual cleanup is error-prone: you forget a symlink, miss the zshrc patch,
 #   or rm the wrong lines. A script removes that friction, ensures every
 #   artifact is accounted for, and reports exactly what happened. It also
@@ -158,7 +158,7 @@ fi
 
 
 # =============================================================================
-# SECTION 4 — PRE-FLIGHT SUMMARY AND CONFIRMATION
+# SECTION 5 — PRE-FLIGHT SUMMARY AND CONFIRMATION
 # =============================================================================
 # TEACHING NOTE — Show the user exactly what will happen before doing it.
 #
@@ -331,7 +331,7 @@ remove_zshrc_patch() {
 
   if $DRY_RUN; then
     print_dry "Would back up ~/.zshrc to ${backup_file}"
-    print_dry "Would remove lines matching '# CTF Toolkit' and 'source ~/.ctf_env'"
+    print_dry "Would remove blank line, '# CTF Toolkit' comment, and 'source ~/.ctf_env' line"
     return 0
   fi
 
@@ -344,11 +344,23 @@ remove_zshrc_patch() {
   # On Linux/Kali (GNU sed), -i works without one. We target Kali here, so
   # `sed -i` is fine. If you ever port this to macOS, change to `sed -i ''`.
   #
-  # The two patterns:
-  #   /^# CTF Toolkit/  — matches the comment header line
-  #   /^source.*\.ctf_env/  — matches the source command line
-  # The d command deletes matching lines. Both patterns run in one sed pass.
-  sed -i '/^# CTF Toolkit/d; /^source.*\.ctf_env/d' "$zshrc"
+  # Three patterns run in a single pass:
+  #   Expression 1: blank line lookahead
+  #     When we see a blank line, we append the next line into the pattern
+  #     space with N. If the combined string ends with a CTF Toolkit comment,
+  #     both lines are deleted together. This removes the blank line that
+  #     ctf-install.sh prepends to its block without touching other blank
+  #     lines in the file.
+  #   Expression 2: /^# CTF Toolkit/d
+  #     Catches the comment line if the blank-line lookahead didn't consume
+  #     it (e.g. .zshrc was manually edited and the blank line is absent).
+  #   Expression 3: /^source.*\.ctf_env/d
+  #     Removes the source command line.
+  sed -i \
+    -e '/^[[:space:]]*$/{N; /\n# CTF Toolkit/d}' \
+    -e '/^# CTF Toolkit/d' \
+    -e '/^source.*\.ctf_env/d' \
+    "$zshrc"
 
   # Validate
   if ! grep -q "source.*\.ctf_env" "$zshrc"; then
@@ -440,7 +452,12 @@ remove_symlinks() {
 # even though everything on disk has been wiped.
 #
 # We handle this in two places:
-#   1. unset — removes the variables from the current shell immediately.
+#   1. unset — removes the variables from THIS SCRIPT'S process only.
+#      Shell variables are in-memory state. A child process (this script)
+#      gets a copy of the parent's environment — unset on the copy never
+#      propagates back to the parent terminal. The user's live session is
+#      NOT cleared here. The one-shot cleanup file (written at completion)
+#      is the mechanism that actually reaches the interactive shell.
 #   2. Rewrite ~/.ctf_env export lines — if the file still exists at this
 #      point (possible since remove_env_file runs first but may have been
 #      skipped), blank the persisted values so they don't reload on next
@@ -453,17 +470,20 @@ remove_symlinks() {
 #
 # Why unset rather than export VAR=""?
 # `unset` removes the variable from the environment entirely. A script that
-# checks [[ -n "$PLATFORM" ]] to detect an active session will correctly
-# see "not set" after unset. An empty export string would pass through as
-# an empty value, which some checks treat as "set but empty" — ambiguous.
+# checks [[ -v PLATFORM ]] to detect an active session will correctly
+# see "not set" after unset. An empty export string would still pass through
+# as a set (but empty) value, which is ambiguous.
 # =============================================================================
 
 remove_session_vars() {
   print_step "Clearing Session Variables"
 
-  # Unset from current shell
+  # Unset within this script's own process — prevents stale values from
+  # leaking into any child processes spawned below. Does NOT affect the
+  # user's interactive terminal (child processes cannot modify parent state).
+  # The one-shot cleanup file registered at completion handles the terminal.
   unset ADDRESS PLATFORM BOXNAME BOX_DIR
-  print_ok "Session variables cleared from current shell."
+  print_ok "Session variables cleared from script process."
 
   # Also blank the persisted values in ~/.ctf_env if the file still exists.
   # This covers the case where remove_env_file was skipped (file not found
@@ -621,6 +641,9 @@ echo ""
 if $DRY_RUN; then
   echo "  ${YELLOW}Dry run only — nothing was changed.${RESET}"
   echo "  Re-run without ${BOLD}--dry-run${RESET} to perform actual removal."
+  echo ""
+  print_dry "Would write one-shot cleanup file: ${TARGET_HOME}/.ctf_cleanup.zsh"
+  print_dry "Would add source line to: ${TARGET_HOME}/.zshrc"
 else
   echo "  ${DIM}Dev repo preserved: ${TARGET_HOME}/github/CTF_Public${RESET}"
   if ! $REMOVE_BACKUPS; then
@@ -657,15 +680,17 @@ else
   # This is the correct tool because the unset runs in the right process
   # (the interactive shell), triggered at the right time (next shell open),
   # with no signal juggling, no timing issues, and no sudo complications.
+  #
+  # Guard: we check whether the source line already exists before appending.
+  # Without this, running full-removal.sh twice appends a second source line.
+  # After the first exec zsh fires the cleanup and deletes the file, the
+  # orphaned second line would produce a "no such file" error on every
+  # subsequent shell open until manually removed.
   cleanup_file="$TARGET_HOME/.ctf_cleanup.zsh"
   zshrc_file="$TARGET_HOME/.zshrc"
 
-  if $DRY_RUN; then
-    print_dry "Would write one-shot cleanup file: $cleanup_file"
-    print_dry "Would add source line to $zshrc_file"
-  else
-    # Write the one-shot cleanup script
-    cat > "$cleanup_file" << 'CLEANUP'
+  # Write the one-shot cleanup script
+  cat > "$cleanup_file" << 'CLEANUP'
 # CTF one-shot cleanup — auto-generated by full-removal.sh
 # Runs once on next shell open, then removes itself.
 unset ADDRESS PLATFORM BOXNAME BOX_DIR
@@ -673,18 +698,21 @@ sed -i '/source.*ctf_cleanup/d' "$HOME/.zshrc"
 rm -f "$HOME/.ctf_cleanup.zsh"
 CLEANUP
 
-    # Make it readable by the target user (it was written as root under sudo)
-    chown "${TARGET_USER}:${TARGET_USER}" "$cleanup_file"
-    chmod 644 "$cleanup_file"
+  # Make it readable by the target user (it was written as root under sudo)
+  chown "${TARGET_USER}:${TARGET_USER}" "$cleanup_file"
+  chmod 644 "$cleanup_file"
 
-    # Append source line to ~/.zshrc so it fires on next shell open
+  # Append source line only if it isn't already present — guards against
+  # a duplicate entry if the script is run more than once.
+  if ! grep -q "source.*ctf_cleanup" "$zshrc_file" 2>/dev/null; then
     echo "" >> "$zshrc_file"
     echo "# CTF session cleanup — added by full-removal.sh, runs once" >> "$zshrc_file"
     echo "source ~/.ctf_cleanup.zsh" >> "$zshrc_file"
-
     print_ok "One-shot cleanup registered — variables will clear on next shell open."
-    print_info "Run ${BOLD}exec zsh${RESET} or open a new terminal to clear them now."
+  else
+    print_skip "One-shot cleanup already registered in ~/.zshrc."
   fi
+  print_info "Run ${BOLD}exec zsh${RESET} or open a new terminal to clear them now."
 fi
 
 echo ""
