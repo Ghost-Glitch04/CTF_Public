@@ -321,7 +321,23 @@ _ctf_persist() {
     esac
   done < <(sed 's/\r//' "$_CTF_HOME/.ctf_env") > "$tmp"
 
-  mv "$tmp" "$_CTF_HOME/.ctf_env"
+  # TEACHING NOTE — Bug fix: `command mv` bypasses shell aliases.
+  #
+  # Kali's default shell config aliases `mv` to `mv -i` (interactive mode),
+  # which prompts "replace file? [y/n]" before every overwrite. Since
+  # _ctf_persist runs inside the user's interactive shell (it's sourced, not
+  # executed as a subprocess), that alias is active — and the prompt fires
+  # every time set-platform, set-box, or set-address persists state.
+  #
+  # `command mv` tells zsh to use the actual mv binary, skipping any alias
+  # or shell function with the same name. This is the standard pattern for
+  # shell scripts that need predictable behavior regardless of the user's
+  # alias configuration.
+  #
+  # The same principle applies to any utility that Kali aliases to an
+  # interactive variant (cp → cp -i, rm → rm -i). If you add more file
+  # operations to sourced functions, use `command` to bypass aliases.
+  command mv "$tmp" "$_CTF_HOME/.ctf_env"
 
   # TEACHING NOTE — Restore readable permissions after rewrite.
   #
