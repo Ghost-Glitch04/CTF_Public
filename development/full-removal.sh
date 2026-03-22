@@ -9,10 +9,11 @@
 #
 # WHAT IT REMOVES:
 #   1. ~/.ctf_env          — deployed env/functions file
-#   2. /opt/CTF            — CTF workspace directory tree
-#   3. /opt/CTF_Public     — production repo clone
-#   4. ~/.zshrc patch      — the source line ctf-install added
-#   5. /usr/local/bin/     — all ctf-* symlinks
+#   2. ~/.ctf_env_mode     — persisted dev/prod environment choice (written by set-env)
+#   3. /opt/CTF            — CTF workspace directory tree
+#   4. /opt/CTF_Public     — production repo clone
+#   5. ~/.zshrc patch      — the source line ctf-install added
+#   6. /usr/local/bin/     — all ctf-* symlinks plus the full-removal symlink
 #
 # WHAT IT DOES NOT TOUCH:
 #   ~/.ctf_backups         — your backups are preserved by default
@@ -140,10 +141,12 @@ show_help() {
   echo ""
   echo "${CYAN}WHAT GETS REMOVED:${RESET}"
   echo "  ~/.ctf_env                     Deployed env/functions file"
+  echo "  ~/.ctf_env_mode                Persisted dev/prod choice (if set-env was used)"
   echo "  /opt/CTF                       CTF workspace directory tree"
   echo "  /opt/CTF_Public                Production repo clone"
   echo "  ~/.zshrc (CTF block only)      Source line added by ctf-install"
   echo "  /usr/local/bin/ctf-*           All CTF symlinks"
+  echo "  /usr/local/bin/full-removal    This script's own symlink"
   echo ""
   echo "${CYAN}WHAT IS PRESERVED:${RESET}"
   echo "  ~/github/CTF_Public            Dev repo (never touched)"
@@ -179,10 +182,11 @@ fi
 
 echo "  The following will be removed:"
 echo "  ${DIM}~/.ctf_env${RESET}"
+echo "  ${DIM}~/.ctf_env_mode    (if present — written by set-env)${RESET}"
 echo "  ${DIM}/opt/CTF          (requires sudo)${RESET}"
 echo "  ${DIM}/opt/CTF_Public   (requires sudo)${RESET}"
 echo "  ${DIM}~/.zshrc CTF block${RESET}"
-echo "  ${DIM}/usr/local/bin/ctf-* symlinks  (requires sudo)${RESET}"
+echo "  ${DIM}/usr/local/bin/ctf-* and full-removal symlinks  (requires sudo)${RESET}"
 
 if $REMOVE_BACKUPS; then
   echo "  ${YELLOW}~/.ctf_backups   (--backups flag set)${RESET}"
@@ -199,7 +203,7 @@ echo ""
 
 if ! $SKIP_CONFIRM && ! $DRY_RUN; then
   echo -n "${YELLOW}  Continue? [y/N]:${RESET} "
-  read confirm
+  read -r confirm
   if [[ "$confirm" != [yY] ]]; then
     echo ""
     echo "${DIM}  Aborted. Nothing changed.${RESET}"
@@ -232,8 +236,44 @@ remove_env_file() {
 
 
 # =============================================================================
-# STEP 2 — REMOVE /opt/CTF (workspace directory tree)
+# STEP 2 — REMOVE ~/.ctf_env_mode
 # =============================================================================
+# TEACHING NOTE — Why this file exists and why it must be removed.
+#
+# ~/.ctf_env_mode is written by `set-env` to persist the user's dev/prod
+# environment choice across terminal sessions. It contains a single line:
+#   export CTF_REPO_DIR="/opt/CTF_Public"   (or the dev path)
+#
+# If this file is left behind after a full removal, the next time the user
+# installs and sources ~/.ctf_env, the resolution block at the top of
+# ctf-env-functions.sh will find and source ~/.ctf_env_mode — immediately
+# pointing CTF_REPO_DIR at a path that no longer exists (e.g. /opt/CTF_Public
+# was just deleted in step 3). This causes silent, confusing failures on the
+# reinstalled toolkit until the user discovers and manually removes the file.
+#
+# Removing it here ensures the next install starts from a clean slate, with
+# auto-detection running correctly from scratch.
+# =============================================================================
+
+remove_env_mode() {
+  print_step "Removing ~/.ctf_env_mode"
+
+  local target="$TARGET_HOME/.ctf_env_mode"
+
+  if [[ -e "$target" ]]; then
+    run_cmd "rm -f $target" rm -f "$target"
+    if $DRY_RUN || [[ ! -e "$target" ]]; then
+      print_ok "Removed: ${BOLD}${target}${RESET}"
+    else
+      print_err "Failed to remove: ${BOLD}${target}${RESET}"
+    fi
+  else
+    print_skip "~/.ctf_env_mode not found — already gone (or set-env was never run)."
+  fi
+}
+
+
+
 # TEACHING NOTE — /opt belongs to root. Anything written there by ctf-install
 # (which uses sudo mkdir + sudo chown) still needs sudo to delete, even if
 # chown made it user-owned afterwards. We use sudo rm -rf to be safe.
@@ -361,7 +401,7 @@ remove_zshrc_patch() {
 
 
 # =============================================================================
-# STEP 5 — REMOVE CTF SYMLINKS FROM /usr/local/bin/
+# STEP 6 — REMOVE CTF SYMLINKS FROM /usr/local/bin/
 # =============================================================================
 # TEACHING NOTE — Dynamic discovery vs. hardcoded list.
 #
@@ -375,6 +415,21 @@ remove_zshrc_patch() {
 #
 # We filter for symlinks specifically (-type l) so we don't accidentally
 # delete a real file that happens to start with "ctf-".
+#
+# TEACHING NOTE — The full-removal symlink needs explicit handling.
+#
+# ctf-install.sh symlinks every script in setup/ to /usr/local/bin/ except
+# those on the denylist (currently only ctf-env-functions.sh). That means
+# full-removal.sh gets symlinked to /usr/local/bin/full-removal.
+#
+# The find pattern above uses -name 'ctf-*', which matches ctf-install and
+# ctf-sync but NOT full-removal — the name doesn't start with "ctf-". Without
+# explicit handling, this symlink is left behind after every removal run.
+#
+# The fix: after the ctf-* sweep, check for /usr/local/bin/full-removal
+# separately and remove it if it points back into the CTF repo. The symlink
+# target check (readlink) ensures we only remove a symlink that is genuinely
+# ours — not some unrelated tool that happens to share the name.
 # =============================================================================
 
 remove_symlinks() {
@@ -386,8 +441,14 @@ remove_symlinks() {
     [[ -n "$link" ]] && symlinks+=("$link")
   done < <(find /usr/local/bin -maxdepth 1 -type l -name "ctf-*" 2>/dev/null)
 
+  # Also check for the full-removal symlink, which does not match ctf-*
+  local full_removal_link="/usr/local/bin/full-removal"
+  if [[ -L "$full_removal_link" ]]; then
+    symlinks+=("$full_removal_link")
+  fi
+
   if [[ ${#symlinks[@]} -eq 0 ]]; then
-    print_skip "No ctf-* symlinks found in /usr/local/bin/ — already clean."
+    print_skip "No CTF symlinks found in /usr/local/bin/ — already clean."
     return 0
   fi
 
@@ -533,6 +594,14 @@ run_validation() {
     all_clean=false
   fi
 
+  # ~/.ctf_env_mode
+  if [[ ! -e "$TARGET_HOME/.ctf_env_mode" ]]; then
+    print_ok "~/.ctf_env_mode — gone"
+  else
+    print_err "~/.ctf_env_mode — still present"
+    all_clean=false
+  fi
+
   # /opt/CTF
   if [[ ! -e "/opt/CTF" ]]; then
     print_ok "/opt/CTF — gone"
@@ -561,16 +630,19 @@ run_validation() {
     all_clean=false
   fi
 
-  # /usr/local/bin/ctf-* symlinks
+  # /usr/local/bin/ctf-* symlinks and full-removal symlink
   local remaining_links
   remaining_links=$(find /usr/local/bin -maxdepth 1 -type l -name "ctf-*" 2>/dev/null | wc -l | tr -d ' ')
+  local full_removal_remains=false
+  [[ -L "/usr/local/bin/full-removal" ]] && full_removal_remains=true && (( remaining_links++ )) || true
   if [[ "$remaining_links" -eq 0 ]]; then
-    print_ok "/usr/local/bin/ctf-* symlinks — gone"
+    print_ok "/usr/local/bin CTF symlinks — gone"
   else
-    print_err "/usr/local/bin/ctf-* — ${remaining_links} symlink(s) still present"
+    print_err "/usr/local/bin — ${remaining_links} CTF symlink(s) still present"
     find /usr/local/bin -maxdepth 1 -type l -name "ctf-*" | while read -r link; do
       echo "    ${DIM}${link}${RESET}"
     done
+    $full_removal_remains && echo "    ${DIM}/usr/local/bin/full-removal${RESET}"
     all_clean=false
   fi
 
@@ -599,6 +671,7 @@ run_validation() {
 # =============================================================================
 
 remove_env_file
+remove_env_mode
 remove_ctf_workspace
 remove_prod_repo
 remove_zshrc_patch
