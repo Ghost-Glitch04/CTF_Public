@@ -432,8 +432,26 @@ run_build_directories() {
   # active. Unset makes the "not set" state unambiguous.
   unset ADDRESS PLATFORM BOXNAME BOX_DIR
 
+  # TEACHING NOTE — Check actual write permission, not the path prefix.
+  #
+  # The previous version used [[ "$CTF_BASE" == /opt/* ]] to decide whether
+  # sudo was needed. This is a path heuristic, not a real permission check.
+  # On a fresh install CTF_BASE does not exist yet, so we check its parent.
+  # On a re-run CTF_BASE already exists (and is owned by the user after the
+  # first run's chown), so we check CTF_BASE directly.
+  #
+  # This means:
+  #   Fresh install (/opt/CTF not yet created): checks /opt/ — root-owned,
+  #     use_sudo=true, sudo mkdir + sudo chown corrects ownership.
+  #   Re-run (/opt/CTF exists, owned by user): checks /opt/CTF — writable,
+  #     use_sudo=false, plain mkdir creates dirs already owned by the user
+  #     and no chown step is needed. This prevents the race where sudo mkdir
+  #     creates dirs as root and sudo chown silently fails, leaving them
+  #     permanently root-owned and inaccessible to the user.
   local use_sudo=false
-  [[ "$CTF_BASE" == /opt/* ]] && use_sudo=true
+  local _check_base="$CTF_BASE"
+  [[ ! -d "$_check_base" ]] && _check_base="$(dirname "$_check_base")"
+  [[ ! -w "$_check_base" ]] && use_sudo=true
 
   if [[ ! -d "$CTF_BASE" ]]; then
     if $use_sudo; then
@@ -463,7 +481,8 @@ run_build_directories() {
   done
 
   # Fix ownership recursively after all dirs are built.
-  # Runs unconditionally so re-runs and partial states are always corrected.
+  # Only runs when sudo was required (fresh install with root-owned parent).
+  # On re-runs the user already owns everything — chown is unnecessary.
   if $use_sudo; then
     sudo chown -R "$USER":"$USER" "$CTF_BASE"
     print_ok "Ownership set: ${BOLD}${CTF_BASE}${RESET} → ${USER}"
