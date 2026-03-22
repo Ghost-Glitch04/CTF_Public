@@ -287,10 +287,23 @@ print_cmd "${INSTALL_SCRIPT} --prod --yes"
 echo ""
 
 # Run as the target user (not root) to match real usage.
-# -n (non-interactive) prevents sudo from prompting for a password mid-test.
-# The outer `sudo` that launched this script already holds credentials;
-# a nested `sudo -u` for a different user would prompt again without -n.
-sudo -u "$TARGET_USER" -n "$INSTALL_SCRIPT" --prod --yes 2>&1 | tee "$INSTALL_LOG"
+# TEACHING NOTE — Why `su` instead of `sudo -u`.
+#
+# The harness runs under sudo (root). When root calls `sudo -u kali`,
+# sudo sets SUDO_USER="root" (the invoking user). ctf-install.sh's
+# resolution block then does `getent passwd root` → /root, and every
+# user-relative path (CTF_ENV_FILE, ZSHRC, BACKUP_DIR) points into
+# root's home instead of kali's. The installer writes to /root/.ctf_env,
+# /root/.zshrc — the wrong user entirely.
+#
+# `su -s /bin/zsh $user -c "command"` switches to the target user
+# WITHOUT setting SUDO_USER. The script's SUDO_USER check sees empty,
+# falls through to `_CTF_HOME="$HOME"`, and $HOME under su is correctly
+# set to the target user's home directory. No SUDO_USER pollution.
+#
+# The -s flag explicitly sets the shell to zsh (matching the #!/bin/zsh
+# shebang) so the script's zsh-specific syntax works correctly.
+su -s /bin/zsh "$TARGET_USER" -c "$INSTALL_SCRIPT --prod --yes" 2>&1 | tee "$INSTALL_LOG"
 install_exit=${pipestatus[1]}
 
 echo ""
@@ -354,7 +367,17 @@ fi
 print_step "Session — set-platform / set-box / set-address / set-env"
 
 # Run session setup in a subshell, capture all four variable values.
-# -n prevents sudo from prompting mid-test (same reason as the installer call).
+#
+# TEACHING NOTE — Same su-over-sudo pattern as the installer invocation.
+#
+# The session subshell sources ~/.ctf_env, which contains the same
+# SUDO_USER resolution block. If we used `sudo -u kali zsh -c "..."`,
+# SUDO_USER would be "root" inside the subshell, _CTF_HOME would resolve
+# to /root, and _ctf_persist would try to rewrite /root/.ctf_env —
+# producing permission errors and writing to the wrong file.
+#
+# `su -s /bin/zsh` avoids this entirely: SUDO_USER is unset, HOME is
+# correctly /home/kali, and all file operations target the right paths.
 #
 # TEACHING NOTE — Why set-env runs last in this sequence.
 #
@@ -366,7 +389,7 @@ print_step "Session — set-platform / set-box / set-address / set-env"
 # /opt/CTF_Public), so ordering doesn't affect the variable values here.
 # The important thing is that set-env runs at all, so we can verify the
 # ~/.ctf_env_mode file was written to disk.
-session_output=$(sudo -u "$TARGET_USER" -n zsh -c "
+session_output=$(su -s /bin/zsh "$TARGET_USER" -c "
   source ${TARGET_HOME}/.ctf_env
   set-platform ${TEST_PLATFORM} 2>&1
   set-box ${TEST_BOX} 2>&1
