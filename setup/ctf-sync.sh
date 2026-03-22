@@ -720,6 +720,12 @@ if [[ -f "$CTF_ENV_SOURCE" ]]; then
     || { echo "${YELLOW}[WARN]${RESET}  Could not write ~/.ctf_env — copy manually:"; \
          echo "         ${BOLD}cp ${CTF_ENV_SOURCE} ${CTF_ENV_FILE}${RESET}"; }
   if $deploy_ok; then
+    # TEACHING NOTE — Same ownership fix as ctf-install.sh's run_deploy_env.
+    #
+    # Under sudo, cp creates the file owned by root. chown ensures the
+    # deploying user can source it. REPO_OWNER holds the real invoking
+    # user's name (resolved at the top of this script alongside _CTF_HOME).
+    chown "${REPO_OWNER}:${REPO_OWNER}" "$CTF_ENV_FILE" 2>/dev/null
     echo "${GREEN}[OK]${RESET}    Deployed: ${BOLD}${CTF_ENV_SOURCE}${RESET} → ${BOLD}${CTF_ENV_FILE}${RESET}"
     echo "${CYAN}[INFO]${RESET}  Reload session commands: ${BOLD}source ~/.ctf_env${RESET}"
   fi
