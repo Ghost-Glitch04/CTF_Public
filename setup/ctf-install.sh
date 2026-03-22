@@ -411,22 +411,24 @@ run_build_directories() {
 
   # TEACHING NOTE — Clear stale session variables before building the workspace.
   #
-  # Shell environment variables persist across installs as long as the shell
-  # process is alive. If you ran set-box in a previous session and then ran
-  # ctf-install without opening a new terminal, PLATFORM/BOXNAME/ADDRESS/BOX_DIR
-  # would still be populated from the old session — even though the workspace
-  # tree is being rebuilt from scratch. This is invisible and confusing: ctf-status
-  # would show a box that was set before the reinstall, giving false confidence
-  # that the session is live when it may point at a path that no longer exists.
+  # ctf-install.sh runs as a child process of the user's terminal — it cannot
+  # modify the parent shell's environment. These unsets only affect variables
+  # within the installer's own process and any child processes it spawns (such
+  # as ctf-sync). They do NOT clear variables in the user's terminal session.
   #
-  # Clearing them here is unconditional and silent — no prompt, no output. The
-  # install is a fresh start; session state should reflect that. The user can
-  # run set-platform / set-box / set-address again once the install completes.
+  # To fully clear a live session the user must run `ctf-clear` in their shell
+  # after the install completes. The completion message already instructs them
+  # to reload with `source ~/.zshrc`, which re-initialises all session state.
+  #
+  # Despite not reaching the parent shell, the unsets are still worthwhile:
+  # they prevent stale values from leaking into ctf-sync (called in Step 7)
+  # and make the installer's own environment consistent regardless of what the
+  # user had set before running it.
   #
   # We use `unset` rather than `export VAR=""` because unset removes the
   # variable entirely from the environment. An empty export would still pass
   # an empty string to child processes, which could cause unexpected behavior
-  # in scripts that check [[ -n "$PLATFORM" ]] to decide whether a session is
+  # in scripts that check [[ -v PLATFORM ]] to decide whether a session is
   # active. Unset makes the "not set" state unambiguous.
   unset ADDRESS PLATFORM BOXNAME BOX_DIR
 
@@ -510,19 +512,19 @@ run_symlinks() {
     if [[ -L "$linkpath" ]]; then
       sudo ln -sf "$script" "$linkpath"
       print_ok "Updated symlink: ${BOLD}${linkname}${RESET} → ${DIM}${script}${RESET}"
+      (( count++ ))
     elif [[ -f "$linkpath" ]]; then
       print_warn "File already exists at ${BOLD}${linkpath}${RESET} — skipping"
       print_info "Remove it manually to allow symlinking: ${BOLD}sudo rm ${linkpath}${RESET}"
     else
       sudo ln -sf "$script" "$linkpath"
       print_ok "Created symlink:  ${BOLD}${linkname}${RESET} → ${DIM}${script}${RESET}"
+      (( count++ ))
     fi
-
-    (( count++ ))
   done
 
   echo ""
-  print_info "${count} script(s) in ${SETUP_DIR} are now available in PATH."
+  print_info "${count} script(s) in ${SETUP_DIR} symlinked and available in PATH."
   print_info "Any new .sh file added to setup/ will be symlinked on next ${BOLD}ctf-install${RESET}."
 }
 

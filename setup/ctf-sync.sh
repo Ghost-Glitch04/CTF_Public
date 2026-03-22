@@ -220,6 +220,7 @@ if [[ -d "${INSTALL_DIR}/.git" ]]; then
   CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
   echo "${DIM}  Branch: $CURRENT_BRANCH${RESET}"
 
+  skip_status_check=false
   PULL_OUTPUT=$(git pull origin "$CURRENT_BRANCH" 2>&1)
   PULL_EXIT=$?
 
@@ -357,21 +358,16 @@ if [[ -d "${INSTALL_DIR}/.git" ]]; then
           echo "         Run ${BOLD}git status${RESET} inside ${BOLD}${INSTALL_DIR}${RESET} to inspect remaining issues."
         fi
 
-        # TEACHING NOTE — Skip the post-pull status check after recovery. (Bug fix #3)
+        # TEACHING NOTE — Skip the post-pull status check after recovery.
         #
-        # After a successful conflict recovery and retry, PULL_OUTPUT holds
-        # the output of the retry pull. The status check further down the
-        # script reads PULL_OUTPUT to decide whether to print "Already up to
-        # date" or "Pull successful". But we have already printed a clear
-        # success message above, so falling through to that check would print
-        # a second status line — potentially a conflicting one if the retry
-        # happened to return "Already up to date".
-        #
-        # We set PULL_OUTPUT to a known value that will satisfy the "Already
-        # up to date" branch, suppressing the second message cleanly. An
-        # alternative would be a boolean flag, but reusing PULL_OUTPUT is
-        # simpler and keeps the control flow easy to follow.
-        PULL_OUTPUT="Already up to date."
+        # After a successful conflict recovery and retry, we have already
+        # printed a clear success message above. Falling through to the
+        # status check below would print a second line — and if the retry
+        # happened to return "Already up to date", that message would be
+        # factually wrong (changes were pulled). A boolean flag is the
+        # correct solution: it skips the status block entirely without
+        # corrupting PULL_OUTPUT, which may be needed for accurate display.
+        skip_status_check=true
 
       else
         echo ""
@@ -394,15 +390,21 @@ if [[ -d "${INSTALL_DIR}/.git" ]]; then
     fi
   fi
 
-  if echo "$PULL_OUTPUT" | grep -q "Already up to date"; then
-    echo "${GREEN}[OK]${RESET}    Already up to date — no changes pulled."
-  else
-    echo "${GREEN}[OK]${RESET}    Pull successful."
-    echo ""
-    echo "${DIM}  Changed files:${RESET}"
-    echo "$PULL_OUTPUT" | grep -E "^\s+[A-Za-z]" | while read -r line; do
-      echo "    ${DIM}$line${RESET}"
-    done
+  if ! $skip_status_check; then
+    if echo "$PULL_OUTPUT" | grep -q "Already up to date"; then
+      echo "${GREEN}[OK]${RESET}    Already up to date — no changes pulled."
+    else
+      echo "${GREEN}[OK]${RESET}    Pull successful."
+      echo ""
+      echo "${DIM}  Changed files:${RESET}"
+      # TEACHING NOTE — Match git stat lines by their distinguishing structure.
+      # git pull --stat output looks like: " setup/ctf-sync.sh | 5 +----"
+      # The pattern "| <digits>" is unique to file stat lines and avoids
+      # matching unrelated output like "Updating abc..def" or remote messages.
+      echo "$PULL_OUTPUT" | grep -E "\|\s+[0-9]" | while read -r line; do
+        echo "    ${DIM}$line${RESET}"
+      done
+    fi
   fi
 
 elif [[ -d "$INSTALL_DIR" && ! -d "${INSTALL_DIR}/.git" ]]; then

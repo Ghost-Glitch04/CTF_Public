@@ -342,7 +342,9 @@ set-address() {
   fi
 
   # Guard: octet range check (each part must be 0–255)
-  local IFS='.'
+  # TEACHING NOTE — ${(@s/./)new_ip} is a zsh array-split modifier that uses
+  # the explicit '.' delimiter directly. It does not read IFS, so no IFS
+  # override is needed here.
   local octets=("${(@s/./)new_ip}")
   for octet in $octets; do
     if (( octet > 255 )); then
@@ -536,6 +538,16 @@ set-platform() {
   # Update BOX_DIR if a box is already set
   if [[ -n "$BOXNAME" ]]; then
     export BOX_DIR="${CTF_BASE}/${PLATFORM}/${BOXNAME}"
+    # TEACHING NOTE — Warn when the updated BOX_DIR doesn't exist on disk.
+    # Switching platforms recalculates the path but does NOT create the
+    # workspace. Without this warning, ctf-status would silently show a
+    # BOX_DIR that points to a non-existent directory, giving the user false
+    # confidence that their workspace is ready. The warning surfaces the
+    # issue immediately and tells them exactly what to do next.
+    if [[ ! -d "$BOX_DIR" ]]; then
+      _ctf_warn "Workspace does not exist for ${_CTF_BOLD}${BOXNAME}${_CTF_RESET} under ${_CTF_BOLD}${new_platform}${_CTF_RESET}"
+      _ctf_info "Run ${_CTF_BOLD}set-box ${BOXNAME}${_CTF_RESET} to create it."
+    fi
   fi
 
   _ctf_persist
@@ -734,7 +746,14 @@ ctf-clear() {
   echo -n "${_CTF_YELLOW}[WARN]${_CTF_RESET}  Clear all CTF session variables? [y/N]: "
   read confirm
   if [[ "$confirm" == [yY] ]]; then
-    export ADDRESS="" PLATFORM="" BOXNAME="" BOX_DIR=""
+    # TEACHING NOTE — Use unset rather than export VAR="" so that child
+    # processes see the variables as truly absent, not as empty strings.
+    # [[ -v VAR ]] checks ("is this variable set?") would return true for
+    # an empty export but false after unset — the latter is the correct
+    # signal that no session is active. _ctf_persist reads the unset vars
+    # as empty strings and writes clean "export VAR=\"\"" lines to disk,
+    # which is the correct on-disk state for a cleared session.
+    unset ADDRESS PLATFORM BOXNAME BOX_DIR
     _ctf_persist
     _ctf_ok "Session cleared."
   else
