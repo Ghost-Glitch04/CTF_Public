@@ -25,9 +25,11 @@
 #   Install      : ctf-install.sh runs successfully
 #   Post-install : ~/.ctf_env deployed, ~/.zshrc patched, platform dirs created
 #                  with correct ownership, symlinks in /usr/local/bin/
-#   Session      : set-platform / set-box / set-address work, BOX_DIR created,
-#                  all workspace subdirs and notes.md present
-#   Cleanup      : full-removal.sh --yes cleans all artifacts (if --cleanup)
+#   Session      : set-platform / set-box / set-address / set-env work,
+#                  BOX_DIR created, ~/.ctf_env_mode written, all workspace
+#                  subdirs and notes.md present
+#   Cleanup      : full-removal.sh --yes cleans all artifacts (if --cleanup),
+#                  including ~/.ctf_env_mode
 #
 # TEACHING NOTE — Why a test harness?
 #   Manual test sequences drift. Steps get skipped, output scrolls past,
@@ -349,15 +351,27 @@ fi
 # the subshell is the "user's terminal", and we inspect what it produces.
 # =============================================================================
 
-print_step "Session — set-platform / set-box / set-address"
+print_step "Session — set-platform / set-box / set-address / set-env"
 
 # Run session setup in a subshell, capture all four variable values.
 # -n prevents sudo from prompting mid-test (same reason as the installer call).
+#
+# TEACHING NOTE — Why set-env runs last in this sequence.
+#
+# set-env switches CTF_REPO_DIR and re-sources ~/.ctf_env. Running it after
+# the other three commands means the variable snapshot captured on the
+# __VARS__ line reflects the state set by set-platform, set-box, and
+# set-address — not a state that might be partially reset by sourcing.
+# On a prod-only test machine, set-env prod is a no-op (the path is already
+# /opt/CTF_Public), so ordering doesn't affect the variable values here.
+# The important thing is that set-env runs at all, so we can verify the
+# ~/.ctf_env_mode file was written to disk.
 session_output=$(sudo -u "$TARGET_USER" -n zsh -c "
   source ${TARGET_HOME}/.ctf_env
   set-platform ${TEST_PLATFORM} 2>&1
   set-box ${TEST_BOX} 2>&1
   set-address ${TEST_ADDRESS} 2>&1
+  set-env prod 2>&1
   echo \"__VARS__ PLATFORM=\$PLATFORM BOXNAME=\$BOXNAME ADDRESS=\$ADDRESS BOX_DIR=\$BOX_DIR\"
 " 2>&1)
 
@@ -377,6 +391,24 @@ check "PLATFORM set to ${TEST_PLATFORM}"         test "$session_platform" = "$TE
 check "BOXNAME set to ${TEST_BOX}"               test "$session_boxname"  = "$TEST_BOX"
 check "ADDRESS set to ${TEST_ADDRESS}"           test "$session_address"  = "$TEST_ADDRESS"
 check "BOX_DIR set to ${BOX_WORKSPACE}"          test "$session_boxdir"   = "$BOX_WORKSPACE"
+
+# set-env checks — verify the mode file was written with the correct content.
+# TEACHING NOTE — Why we check the file on disk rather than a variable.
+#
+# set-env's purpose is persistence: the choice survives terminal restarts.
+# A variable check would only confirm the in-session export worked. A file
+# check confirms the next session will also pick up the right path — which
+# is the actual contract set-env makes.
+#
+# Two separate checks rather than one: the first confirms the file exists at
+# all; the second confirms the content is correct. A file containing the
+# wrong path would pass the first and fail the second, pointing directly at
+# a content bug in set-env's write step rather than a missing file.
+check "set-env prod wrote ~/.ctf_env_mode" \
+  test -f "${TARGET_HOME}/.ctf_env_mode"
+
+check "~/.ctf_env_mode contains prod path (/opt/CTF_Public)" \
+  grep -q "opt/CTF_Public" "${TARGET_HOME}/.ctf_env_mode"
 
 
 # =============================================================================
@@ -420,12 +452,13 @@ if $CLEANUP; then
   removal_exit=${pipestatus[1]}
   echo ""
 
-  check "full-removal.sh exited successfully"      test $removal_exit -eq 0
-  check "~/.ctf_env removed after cleanup"         test ! -f "${TARGET_HOME}/.ctf_env"
-  check "/opt/CTF removed after cleanup"           test ! -d "$CTF_BASE"
-  check "/opt/CTF_Public removed after cleanup"    test ! -d "$REPO_DIR"
+  check "full-removal.sh exited successfully"       test $removal_exit -eq 0
+  check "~/.ctf_env removed after cleanup"          test ! -f "${TARGET_HOME}/.ctf_env"
+  check "~/.ctf_env_mode removed after cleanup"     test ! -f "${TARGET_HOME}/.ctf_env_mode"
+  check "/opt/CTF removed after cleanup"            test ! -d "$CTF_BASE"
+  check "/opt/CTF_Public removed after cleanup"     test ! -d "$REPO_DIR"
   check "ctf-install symlink removed after cleanup" test ! -L "/usr/local/bin/ctf-install"
-  check "ctf-sync symlink removed after cleanup"   test ! -L "/usr/local/bin/ctf-sync"
+  check "ctf-sync symlink removed after cleanup"    test ! -L "/usr/local/bin/ctf-sync"
 fi
 
 # Clean up temp log
