@@ -112,12 +112,34 @@ The installer automatically detects the `~/github/CTF_Public` path and configure
 
 ### Dual Install (both prod and dev on the same machine)
 
-If you have both installs on one machine (e.g. a Kali VM used for both purposes), the dev path takes priority by default. Pass `--prod` to any command to explicitly target the production install:
+If you have both installs on one machine (e.g. a Kali VM used for both purposes), the dev path takes priority by default. Use `set-env` to explicitly switch between environments at any time:
+
+```zsh
+set-env prod     # switch to /opt/CTF_Public and persist the choice
+set-env dev      # switch back to ~/github/CTF_Public
+```
+
+The choice is written to `~/.ctf_env_mode` and survives terminal restarts automatically. To return to auto-detection, delete that file:
+
+```zsh
+rm ~/.ctf_env_mode && source ~/.ctf_env
+```
+
+You can also pass `--prod` to `ctf-sync` and `ctf-install` to target the production install explicitly for a single command without switching your active environment:
 
 ```zsh
 ctf-sync --prod      # pull latest into /opt/CTF_Public
 ctf-install --prod   # re-run installer targeting /opt/CTF_Public
 ```
+
+<!--
+README BEST PRACTICE — Document the commands that actually exist.
+
+The previous version described --prod as the only way to switch between
+environments on a dual-install machine. set-env now handles that interactively
+and persistently — it should be the first thing a user reaches for, with --prod
+called out as the "one-off command without switching" use case.
+-->
 
 ---
 
@@ -179,6 +201,7 @@ Readers who are learning will read the sections below it.
 | `set-platform <code>` | Set the active CTF platform |
 | `set-box <name>` | Set the active box and create its workspace |
 | `set-address <ip>` | Set the target IP address |
+| `set-env <mode>` | Switch active environment (`dev` or `prod`) and persist the choice |
 
 ### Session Info
 
@@ -199,9 +222,10 @@ Readers who are learning will read the sections below it.
 |---------|-------------|
 | `ctf-install` | Re-run the machine installer |
 | `ctf-install --prod` | Re-run installer targeting the production install |
+| `ctf-install --yes` | Re-run installer without the confirmation prompt |
 | `ctf-install --check` | Dependency check only — no changes made |
 | `ctf-install --help` | Show installer help |
-| `ctf-sync` | Pull latest repo changes from GitHub |
+| `ctf-sync` | Pull latest repo changes from GitHub and redeploy `~/.ctf_env` |
 | `ctf-sync --prod` | Pull latest changes for the production install |
 | `ctf-sync --help` | Show sync help |
 
@@ -242,6 +266,12 @@ Pull the latest changes at any time:
 ctf-sync
 ```
 
+`ctf-sync` does more than pull — it also redeploys `~/.ctf_env` from the freshly pulled `ctf-env-functions.sh`. This means a single `ctf-sync` is all you need to pick up new session commands. After syncing, reload the changes in your current terminal:
+
+```zsh
+source ~/.ctf_env
+```
+
 If `ctf-sync` encounters files that have local modifications (usually permission changes from a previous `chmod +x` run), it will show you the affected files and offer to reset them:
 
 ```
@@ -280,11 +310,9 @@ CTF_Public/
 
 ### How the files relate
 
-- **`ctf-install.sh`** is the one-time setup script. It deploys `ctf-env-functions.sh` to `~/.ctf_env`, patches `~/.zshrc` to source it, and symlinks all scripts to `/usr/local/bin` so they are available everywhere.
-- **`ctf-env-functions.sh`** is the file sourced into every terminal session. It defines all interactive commands (`set-platform`, `ctf-status`, etc.) and is the single source of truth for known platforms and workspace layout.
-- **`ctf-sync.sh`** is the update mechanism. It can be run before `ctf-install` (as a bootstrap on a new machine) or afterwards (as a regular update command).
-
-To update a session command, you only need to edit `ctf-env-functions.sh`, push, and run `ctf-sync && source ~/.ctf_env`. No reinstall required.
+- **`ctf-install.sh`** is the one-time setup script. It deploys `ctf-env-functions.sh` to `~/.ctf_env`, patches `~/.zshrc` to source it, and symlinks all scripts to `/usr/local/bin` so they are available everywhere. Note that `ctf-env-functions.sh` itself is intentionally **not** symlinked — it is a sourced file, not a runnable command.
+- **`ctf-env-functions.sh`** is the file sourced into every terminal session. It defines all interactive commands (`set-platform`, `ctf-status`, etc.) and is the single source of truth for known platforms and workspace layout. To update a session command, edit this file, push, and run `ctf-sync && source ~/.ctf_env` — no reinstall required.
+- **`ctf-sync.sh`** is the update mechanism. It clones the repo on a fresh machine or pulls the latest on an existing one, fixes file ownership, makes all scripts executable, and deploys a fresh `~/.ctf_env` in a single run.
 
 ---
 
@@ -352,6 +380,46 @@ source ~/.ctf_env
 
 ---
 
+## Environment Switching
+
+The toolkit supports an explicit dev/prod toggle through `set-env`. This is the recommended approach on any machine where both installs coexist.
+
+```zsh
+set-env prod   # switch to /opt/CTF_Public
+set-env dev    # switch to ~/github/CTF_Public
+```
+
+When you call `set-env`, the choice is written to `~/.ctf_env_mode`. On every new terminal, the toolkit reads that file first — before any auto-detection runs — so your choice persists without any further action.
+
+`ctf-status` shows both the active environment and how it was determined:
+
+```
+╔══ CTF Session Status ══════════════════════╗
+║  Env        : prod (/opt/CTF_Public) (explicit — ~/.ctf_env_mode)
+║  Platform   : HTB (Hack The Box)
+║  Box        : Lame
+║  Address    : 10.10.10.3
+║  Box Dir    : /opt/CTF/HTB/Lame
+╚════════════════════════════════════════════╝
+```
+
+To return to auto-detection, delete the mode file:
+
+```zsh
+rm ~/.ctf_env_mode && source ~/.ctf_env
+```
+
+<!--
+README BEST PRACTICE — New features deserve their own section.
+
+set-env is a first-class command with its own persistence mechanism
+(~/.ctf_env_mode). Documenting it only inside "Dual Install" would bury
+it. Users who aren't on a dual-install machine still benefit from knowing
+that set-env exists and what ctf-status tells them about it.
+-->
+
+---
+
 ## Session Persistence
 
 Session variables (`PLATFORM`, `BOXNAME`, `ADDRESS`, `BOX_DIR`) persist across terminal windows. When you run `set-address 10.10.10.3` in one terminal, opening a new terminal will have that address already set.
@@ -386,7 +454,11 @@ Make sure you have run `set-platform` first. The workspace path is `CTF_BASE/PLA
 
 **Wrong environment is active**
 
-Run `ctf-status` — the `Env` row shows whether you are in `dev` or `prod` mode and which directory is being used. If the wrong one is active, use `--prod` flags or set `CTF_REPO_DIR` in your environment.
+Run `ctf-status` — the `Env` row shows whether you are in `dev` or `prod` mode, which directory is being used, and whether the mode was set explicitly or auto-detected. To switch, run `set-env dev` or `set-env prod`. To force a single command at the other install without switching, pass `--prod` to `ctf-sync` or `ctf-install`.
+
+**`set-env` says the path does not exist**
+
+For `set-env prod`, the production repo must already be present at `/opt/CTF_Public`. On a fresh machine, run `ctf-install --prod` first (which clones the repo), then `set-env prod`. For `set-env dev`, clone the repo with `ctf-sync` or `git clone`.
 
 <!--
 README BEST PRACTICE — A troubleshooting section.
