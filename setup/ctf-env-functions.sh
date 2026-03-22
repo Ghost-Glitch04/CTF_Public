@@ -290,17 +290,50 @@ _ctf_persist() {
   # will have a clean ~/.ctf_env and sed will find nothing to strip — it is a
   # no-op in that case. Machines set up before the fix are silently healed the
   # first time _ctf_persist runs after updating to this version.
+  # TEACHING NOTE — Bug fix: use `print -r --` instead of `echo`.
+  #
+  # In zsh, `echo` interprets backslash escape sequences by default — \n
+  # becomes a literal newline, \t becomes a tab, etc. This is unlike bash,
+  # where `echo` only interprets escapes with the -e flag.
+  #
+  # The catch-all branch below echoes every line of ~/.ctf_env verbatim.
+  # If any line contains a backslash sequence (like `\n` in a printf format
+  # string), zsh's echo would expand it — splitting one line into two and
+  # corrupting the file. This was the root cause of the "parse error near
+  # '\n'" at line 967: the printf line in ctf-help's platform loop contains
+  # `\n` in its format string, which echo expanded into a real newline,
+  # breaking the printf statement across two lines.
+  #
+  # `print -r --` is the zsh-safe alternative:
+  #   -r  = raw mode: do NOT interpret backslash escapes
+  #   --  = end of options: treat everything after as data, even if it
+  #         starts with a hyphen (prevents lines like "-n" from being
+  #         swallowed as a flag)
+  #
+  # This is the correct tool for echoing arbitrary file content line-by-line.
   while IFS= read -r line; do
     case "$line" in
-      "export ADDRESS="*)  echo "export ADDRESS=\"${ADDRESS}\""   ;;
-      "export PLATFORM="*) echo "export PLATFORM=\"${PLATFORM}\"" ;;
-      "export BOXNAME="*)  echo "export BOXNAME=\"${BOXNAME}\""   ;;
-      "export BOX_DIR="*)  echo "export BOX_DIR=\"${BOX_DIR}\""   ;;
-      *)                   echo "$line"                            ;;
+      "export ADDRESS="*)  print -r -- "export ADDRESS=\"${ADDRESS}\""   ;;
+      "export PLATFORM="*) print -r -- "export PLATFORM=\"${PLATFORM}\"" ;;
+      "export BOXNAME="*)  print -r -- "export BOXNAME=\"${BOXNAME}\""   ;;
+      "export BOX_DIR="*)  print -r -- "export BOX_DIR=\"${BOX_DIR}\""   ;;
+      *)                   print -r -- "$line"                            ;;
     esac
   done < <(sed 's/\r//' "$_CTF_HOME/.ctf_env") > "$tmp"
 
   mv "$tmp" "$_CTF_HOME/.ctf_env"
+
+  # TEACHING NOTE — Restore readable permissions after rewrite.
+  #
+  # mktemp creates files with mode 0600 (owner read/write only). The mv
+  # above replaces ~/.ctf_env with that temp file, inheriting the 0600
+  # permissions. If anything sources ~/.ctf_env from a different context
+  # (e.g. a test harness running a subshell), the restricted permissions
+  # can cause "permission denied" errors.
+  #
+  # 0644 (owner rw, group/other read) matches what `cp` produces and is
+  # the standard permission for shell config files that need to be sourced.
+  chmod 644 "$_CTF_HOME/.ctf_env"
 }
 
 
